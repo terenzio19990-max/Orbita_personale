@@ -1,5 +1,6 @@
 
 (()=>{
+const EDITION = 'personale';
 'use strict';
 /* =========================================================
    PITWALL — core: utils, dates, state, sync, game, UI kit
@@ -3187,7 +3188,30 @@ function focusBySubjectCard() {
 
 /* ---------------- AI import: transcript & timetable ---------------- */
 const PDFJS = window.orbitaDesktop ? 'vendor/pdf.min.js' : 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', PDFJS_W = window.orbitaDesktop ? 'vendor/pdf.worker.min.js' : 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-const loadScript = src => new Promise((res, rej) => { if ([...document.scripts].some(s => s.src === src)) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('script')); document.head.appendChild(s); });
+/* libraries from Orbita's own files (vendor/) when they are there — web build, desktop, artifact — and from the CDN only as a fallback */
+const VEND = {
+  map: { 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js': 'pdf.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js': 'pdf.worker.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js': 'jspdf.umd.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js': 'jszip.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js': 'xlsx.full.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.13.0/mammoth.browser.min.js': 'mammoth.browser.min.js', 'https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js': 'mammoth.browser.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js': 'katex/katex.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css': 'katex/katex.min.css',
+    'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js': 'pdf-lib.min.js', 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js': 'zxing.min.js', 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js': 'zxing.min.js',
+    'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js': 'tesseract.min.js',
+    'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js': 'leaflet/leaflet.js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css': 'leaflet/leaflet.css' },
+  DESK_OLD: ['pdf.min.js', 'pdf.worker.min.js', 'jspdf.umd.min.js', 'jszip.min.js', 'xlsx.full.min.js', 'mammoth.browser.min.js'],
+  have: null, ready: null,
+  check() { return this.ready || (this.ready = (async () => { const ok = /^https?:$/.test(location.protocol);
+    try { if (ok) { const r = await fetch('vendor/manifest.json', { cache: 'no-cache' }); if (r.ok) { const j = await r.json(); this.have = new Set(j.files || []); return; } } } catch (_) {}
+    this.have = new Set(window.orbitaDesktop ? this.DESK_OLD : []); })()); },
+  /** the local copy of a CDN file, or the CDN address itself */
+  url(u) { let f = this.map[u]; if (!f) { const m = /^https:\/\/cdn\.jsdelivr\.net\/npm\/dejavu-fonts-ttf@2\.37\.3\/ttf\/([\w.-]+\.ttf)$/.exec(u); if (m) f = 'dejavu/' + m[1]; } return f && this.have && this.have.has(f) ? 'vendor/' + f : u; },
+};
+const loadScript = src => VEND.check().then(() => new Promise((res, rej) => { const loc = VEND.url(src);
+  if ([...document.scripts].some(s => s.src === src || s.dataset.src === src)) return res();
+  const add = (u, fb) => { const s = document.createElement('script'); s.src = u; s.dataset.src = src; s.onload = () => { if (/pdf\.min\.js$/.test(src)) VEND.pdfWorker(); res(); }; s.onerror = () => { s.remove(); fb ? add(fb) : rej(new Error('script')); }; document.head.appendChild(s); };
+  add(loc, loc !== src ? src : null); }));
+/* pdf.js' worker follows the same rule, whoever sets it */
+VEND.pdfWorker = function () { const L = window.pdfjsLib; if (!L || !L.GlobalWorkerOptions || L.GlobalWorkerOptions.__v) return; const G = L.GlobalWorkerOptions; let w = G.workerSrc;
+  try { Object.defineProperty(G, 'workerSrc', { configurable: true, get: () => w, set: v => { w = VEND.url(v); } }); G.__v = 1; if (w) w = VEND.url(w); } catch (_) {} };
 async function readPdf(file, wantImages) {
   await loadScript(PDFJS);
   const lib = window.pdfjsLib; lib.GlobalWorkerOptions.workerSrc = PDFJS_W;
@@ -5265,10 +5289,18 @@ if (DESK) {
 /* ---------- updates (desktop): small file, one click, no reinstall ---------- */
 if (DESK && DESK.update) {
   const fmtBuild = b => b && b.length >= 12 ? `${b.slice(6, 8)}/${b.slice(4, 6)}/${b.slice(0, 4)} ${b.slice(8, 10)}:${b.slice(10, 12)}` : '—';
+  /* two editions (personale / commerciale): an update file says which one it is for, in the
+     orbita-edition tag and in its name; the wrong one is refused here, before the program installs it */
+  const ED_N = { personale: 'Orbita personale', commerciale: 'Orbita commerciale' };
+  const edOf = html => { const m = /<meta name="orbita-edition" content="(\w+)"/.exec(String(html || '').slice(0, 6000)); return m ? m[1] : null; };
+  const edOfName = n => /personale/i.test(n || '') ? 'personale' : /commerciale/i.test(n || '') ? 'commerciale' : null;
+  const wrongEd = e => e && e !== EDITION ? `Questo aggiornamento è per ${ED_N[e] || e}, qui c'è ${ED_N[EDITION]}. Prendi il file con “${EDITION}” nel nome.` : null;
   const Upd = {
-    info: null, found: null,
-    async refresh() { try { this.info = await DESK.update.info(); this.found = await DESK.update.scan(); } catch (_) {} },
+    info: null, found: null, other: null,
+    async refresh() { try { this.info = await DESK.update.info(); const f = await DESK.update.scan(); const e = f && edOfName(f.name); this.found = f && !wrongEd(e) ? f : null; this.other = f && wrongEd(e) ? f : null; } catch (_) {} },
     async install(html, fromFile) {
+      const bad = wrongEd(fromFile ? edOfName((this.found || this.other || {}).name) : edOf(html));
+      if (bad) { Island.toast({ icon: 'x', c: 'var(--red)', t: 'Aggiornamento dell\'altra edizione', s: bad, ms: 6000 }); return; }
       const r = await DESK.update.install(html, fromFile);
       if (r.ok) Island.toast({ icon: 'download', c: 'var(--green)', t: 'Aggiornamento installato', s: 'Orbita si riavvia con la nuova versione', ms: 2400 });
       else Island.toast({ icon: 'x', c: 'var(--red)', t: 'Aggiornamento non installato', s: r.message || '', ms: 4200 });
@@ -5293,9 +5325,10 @@ if (DESK && DESK.update) {
     const I = Upd.info || {};
     return oldR.call(this) + `<div class="section-h">Aggiornamenti</div>
       <div class="card" style="display:flex;flex-direction:column;gap:12px">
-        <div style="display:flex;gap:12px;align-items:center"><span class="tile-ico" style="background:var(--accent)">${ico('download')}</span><div class="grow"><b>Versione del ${fmtBuild(I.build)}</b><div class="muted" style="font-size:14px">${I.source === 'aggiornamento' ? 'Aggiornata da file · installazione del ' + fmtBuild(I.bundled) : 'Versione installata'}</div></div></div>
+        <div style="display:flex;gap:12px;align-items:center"><span class="tile-ico" style="background:var(--accent)">${ico('download')}</span><div class="grow"><b>${ED_N[EDITION]} · versione del ${fmtBuild(I.build)}</b><div class="muted" style="font-size:14px">${I.source === 'aggiornamento' ? 'Aggiornata da file · installazione del ' + fmtBuild(I.bundled) : 'Versione installata'}</div></div></div>
         ${Upd.found ? `<div class="row" style="padding:0"><span class="grow"><b>Nuova versione pronta</b><div class="muted" style="font-size:14px">${esc(Upd.found.name)} · ${fmtBuild(Upd.found.build)}</div></span><button class="btn primary" data-act="updInstall">Installa</button></div>` : ''}
-        <p class="muted" style="font-size:14px;margin:0">Gli aggiornamenti sono un solo file piccolo (“Orbita-aggiornamento….html”). Se lo trovo nella cartella Download te lo propongo all'avvio; altrimenti scegline uno o trascinalo nella finestra. I tuoi dati non vengono toccati.</p>
+        ${Upd.other ? `<div class="row" style="padding:0"><span class="grow"><b>In Download c'è un aggiornamento di ${ED_N[edOfName(Upd.other.name)]}</b><div class="muted" style="font-size:14px">${esc(Upd.other.name)} non è per questa edizione e non lo installo. Se hai anche il file per ${ED_N[EDITION]}, sceglilo con “Installa da file…”.</div></span></div>` : ''}
+        <p class="muted" style="font-size:14px;margin:0">Gli aggiornamenti sono un solo file piccolo (“Orbita-aggiornamento-${EDITION}-….html”). Se lo trovo nella cartella Download te lo propongo all'avvio; altrimenti scegline uno o trascinalo nella finestra. I tuoi dati non vengono toccati.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="updPick">${ico('upload', 'sm')}Installa da file…</button><button class="btn" data-act="updScan">${ico('refresh', 'sm')}Controlla in Download</button>${I.source === 'aggiornamento' ? `<button class="btn plain danger" data-act="updReset">Torna alla versione installata</button>` : ''}</div>
       </div>`;
   };
@@ -5304,7 +5337,7 @@ if (DESK && DESK.update) {
   });
   ACT.updInstall = () => Upd.install(null, true);
   ACT.updPick = () => Upd.pick();
-  ACT.updScan = async () => { await Upd.refresh(); App.render(); Island.toast(Upd.found ? { icon: 'download', c: 'var(--accent)', t: 'Aggiornamento trovato', s: fmtBuild(Upd.found.build), ms: 2200 } : { icon: 'check', c: 'var(--green)', t: 'Nessun aggiornamento in Download', s: 'Hai già l\'ultima versione', ms: 2200 }); };
+  ACT.updScan = async () => { await Upd.refresh(); App.render(); Island.toast(Upd.found ? { icon: 'download', c: 'var(--accent)', t: 'Aggiornamento trovato', s: fmtBuild(Upd.found.build), ms: 2200 } : Upd.other ? { icon: 'x', c: 'var(--orange)', t: 'Trovato solo un aggiornamento dell\'altra edizione', s: Upd.other.name, ms: 4200 } : { icon: 'check', c: 'var(--green)', t: 'Nessun aggiornamento in Download', s: 'Hai già l\'ultima versione', ms: 2200 }); };
   ACT.updReset = async () => { await DESK.update.reset(); };
 }
 
@@ -6888,7 +6921,7 @@ const PDFX = {
     const out = {};
     for (const [k, f] of Object.entries(this.FILES)) {
       let buf = null; try { const c = await IDB.get('font:' + f); if (c) buf = c instanceof Blob ? await c.arrayBuffer() : c; } catch (_) {}
-      if (!buf) { const r = await fetch(this.FONT + f); if (!r.ok) throw new Error('font'); buf = await r.arrayBuffer(); try { await IDB.put('font:' + f, new Blob([buf])); } catch (_) {} }
+      if (!buf) { await VEND.check(); let r = await fetch(VEND.url(this.FONT + f)).catch(() => null); if (!r || !r.ok) r = await fetch(this.FONT + f); if (!r.ok) throw new Error('font'); buf = await r.arrayBuffer(); try { await IDB.put('font:' + f, new Blob([buf])); } catch (_) {} }
       out[k] = this.b64(buf);
     }
     return (this.fonts = out);
@@ -13148,7 +13181,7 @@ const geoHere = () => new Promise((ok, ko) => { if (!navigator.geolocation) retu
 const mapsLink = (lat, lng, walk = true) => /iPad|iPhone|Mac/.test(navigator.userAgent) ? `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=${walk ? 'w' : 'd'}` : `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=${walk ? 'walking' : 'driving'}`;
 const LEAF = ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'];
 /** a Leaflet map with pins; returns null (and keeps the box empty) when offline */
-async function miniMap(box, pins, opt = {}) { try { if (!$('link[data-leaf]')) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = LEAF[1]; l.dataset.leaf = 1; document.head.appendChild(l); } await loadScript(LEAF[0]); } catch (_) { box.innerHTML = '<div class="muted" style="padding:14px;font-size:13px">Mappa non disponibile offline</div>'; return null; }
+async function miniMap(box, pins, opt = {}) { try { await VEND.check(); if (!$('link[data-leaf]')) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = VEND.url(LEAF[1]); l.onerror = () => { if (l.href !== LEAF[1]) l.href = LEAF[1]; }; l.dataset.leaf = 1; document.head.appendChild(l); } await loadScript(LEAF[0]); } catch (_) { box.innerHTML = '<div class="muted" style="padding:14px;font-size:13px">Mappa non disponibile offline</div>'; return null; }
   const L = window.L; if (!L) return null; box.innerHTML = ''; const m = L.map(box, { zoomControl: !opt.static, attributionControl: true, dragging: !opt.static, scrollWheelZoom: false });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(m);
   const P = pins.filter(p => p.lat != null && p.lng != null); for (const p of P) { const mk = L.marker([p.lat, p.lng], { icon: L.divIcon({ className: 'mm-pin', html: `<span>${p.e || '📍'}</span>`, iconSize: [34, 34], iconAnchor: [17, 32] }) }).addTo(m); if (p.t) mk.bindPopup(`<b>${esc(p.t)}</b>${p.s ? '<br>' + esc(p.s) : ''}`); if (p.fn) mk.on('click', p.fn); }
@@ -14135,7 +14168,7 @@ async function checkup() { S.profile.checkupSeen = true; save('profile'); let ma
   add(window.MediaRecorder && HTMLCanvasElement.prototype.captureStream ? 'ok' : 'warn', '🎞️', 'Video del mese', window.MediaRecorder && HTMLCanvasElement.prototype.captureStream ? 'Si può salvare come video' : 'Qui salvo il collage al posto del video');
   try { const st = await navigator.storage.estimate(), pers = navigator.storage.persisted ? await navigator.storage.persisted() : false; add(pers ? 'ok' : 'warn', '💾', 'Spazio dati', `${(st.usage / 1048576).toFixed(1)} MB usati${st.quota ? ` su ${Math.round(st.quota / 1073741824 * 10) / 10} GB` : ''} · ${pers ? 'protetti dalla pulizia automatica' : 'il sistema potrebbe cancellarli se manca spazio'}`, pers ? null : ['Proteggi', async () => { try { await navigator.storage.persist(); } catch (_) {} run(); }]); } catch (_) {}
   add(S.profile.lastBackup && dayDiff(S.profile.lastBackup, todayK()) < 31 ? 'ok' : 'warn', '🗂️', 'Backup', S.profile.lastBackup ? `Ultimo: ${dIt(S.profile.lastBackup)}` : 'Mai fatto', ['Fai ora', () => ACT.exportData()]);
-  const build = (document.querySelector('meta[name=orbita-build]') || {}).content; add('ok', '🏷️', 'Versione', build ? `Build ${build.slice(6, 8)}/${build.slice(4, 6)} ${build.slice(8, 10)}:${build.slice(10, 12)}` : desk ? 'App per computer' : 'Versione su Claude');
+  const build = (document.querySelector('meta[name=orbita-build]') || {}).content; add('ok', '🏷️', 'Versione', (EDITION === 'personale' ? 'Personale · ' : 'Commerciale · ') + (build ? `Build ${build.slice(6, 8)}/${build.slice(4, 6)} ${build.slice(8, 10)}:${build.slice(10, 12)}` : desk ? 'App per computer' : 'Versione su Claude'));
   const paint = () => { const bad = R.filter(r => r.ok !== 'ok').length;
     B.innerHTML = `<div class="dt-hero"><b>${bad ? `${bad} ${bad === 1 ? 'cosa da sistemare' : 'cose da sistemare'}` : 'Tutto a posto ✓'}</b><span class="muted">${desk ? 'App per computer' : ios ? (standalone ? 'iPhone/iPad, dalla schermata Home' : 'iPhone/iPad, da Safari') : 'Browser'}</span></div>
       <div class="list">${R.map((r, i) => `<div class="row"><span class="ck-st ${r.ok}">${r.ok === 'ok' ? '✓' : r.ok === 'bad' ? '✕' : '!'}</span><span style="font-size:18px">${r.ic}</span><span class="grow" style="min-width:0"><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></span>${r.fix ? `<button class="btn sm" data-ckf="${i}">${esc(r.fix[0])}</button>` : ''}</div>`).join('')}</div>
@@ -15235,7 +15268,7 @@ const pageRect = (b, i) => NB.rects(b)[i];
     const all = Object.values(S.boards).sort((a, b) => b.updated - a.updated), F = UI.nbF || 'all', folders = [...new Set(all.map(b => b.folder).filter(Boolean))].sort();
     const list = all.filter(b => F === 'all' || (F === 'fav' ? b.fav : b.folder === F));
     if (UI.board && !S.boards[UI.board]) UI.board = null; if (!UI.board && all.length) UI.board = all[0].id; const b = S.boards[UI.board];
-    if (!b) return `<h1 class="large-title">Lavagne e quaderni</h1><p class="subtitle">Quaderni a pagine come GoodNotes o lavagne infinite: penna con la pressione, forme perfette, lazo, testo, immagini, nastro, laser, registrazione audio e IA.</p>
+    if (!b) return `<h1 class="large-title">Lavagne e quaderni</h1><p class="subtitle">Quaderni a pagine o lavagne infinite: penna con la pressione, forme perfette, lazo, testo, immagini, nastro, laser, registrazione audio e IA.</p>
       <div class="card"><div class="empty">${ico('pencil')}<b>Il tuo primo quaderno</b><p>Scegli carta e modello: righe, quadretti, millimetrata, Cornell, pentagramma…</p><button class="btn primary" data-act="newBoard">Crea</button></div></div>`;
     const pages = NB.is(b), tools = NBTOOLS;
     const lib = `<div class="nb-lib"><div class="chips hs nb-folders"><button class="chip" data-nbf="all" aria-pressed="${F === 'all'}">Tutti</button><button class="chip" data-nbf="fav" aria-pressed="${F === 'fav'}">★ Preferiti</button>${folders.map(f => `<button class="chip" data-nbf="${esc(f)}" aria-pressed="${F === f}">📁 ${esc(f)}</button>`).join('')}</div>
@@ -15409,7 +15442,7 @@ ACT.bMore = () => { const B = Board, b = B.b; if (!b) return; const pages = NB.i
       $('#bDel', el).onclick = e => inlineConfirm(e.currentTarget, `Eliminare “${b.title}”?`, 'Elimina', () => { B.unmount(); delete S.boards[b.id]; save('board-' + b.id); UI.board = null; B.b = null; sh.close(); App.render(); }); } }); };
 ACT.nbRo = () => { const b = Board.b; if (b) { b.ro = false; Board.persist(); App.render(); } };
 async function nbPdf(b, how) { PDFX.run(async () => { const J = await PDFX.lib(); let doc = null; for (let i = 0; i < b.pages.length; i++) { const R = pageRect(b, i), land = R.w > R.h, mmW = land ? 297 : 210, mmH = mmW * R.h / R.w; if (!doc) doc = new J({ orientation: land ? 'l' : 'p', unit: 'mm', format: [mmW, mmH] }); else doc.addPage([mmW, mmH], land ? 'l' : 'p');
-    const c = nbRender(b, R, 2.2); doc.addImage(c.toDataURL('image/jpeg', .9), 'JPEG', 0, 0, mmW, mmH); if (b.pages[i].title) doc.outline && doc.outline.add(null, b.pages[i].title, { pageNumber: i + 1 }); } return doc; }, PDFX.name(b.title, 'Quaderno'), how); }
+    const c = nbRender(b, R, 2.2); doc.addImage(c.toDataURL('image/jpeg', .9), 'JPEG', 0, 0, mmW, mmH); if (typeof nbPdfPage === 'function') nbPdfPage(doc, b, i, mmW, mmH); if (b.pages[i].title) doc.outline && doc.outline.add(null, b.pages[i].title, { pageNumber: i + 1 }); } if (typeof nbPdfEnd === 'function') nbPdfEnd(doc, b); return doc; }, PDFX.name(b.title, 'Quaderno'), how); }
 function nbImport() { const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = 'application/pdf,.pdf,image/*'; i.onchange = async () => { const B = Board, b = B.b; const add = []; Island.toast({ icon: 'upload', t: 'Importo…', ms: 2000 });
     for (const f of i.files) { if (/pdf/i.test(f.type) || /\.pdf$/i.test(f.name)) { try { await loadScript(PDFJS); const lib = window.pdfjsLib; lib.GlobalWorkerOptions.workerSrc = PDFJS_W; const pdf = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise; const N = Math.min(pdf.numPages, 40); if (pdf.numPages > 40) Island.toast({ icon: 'pages', c: 'var(--orange)', t: 'Importo le prime 40 pagine', ms: 2600 });
           for (let k = 1; k <= N; k++) { const pg = await pdf.getPage(k), vp0 = pg.getViewport({ scale: 1 }), land = vp0.width > vp0.height, sz = land ? 'a4l' : 'a4', [w] = NB.SIZES[sz], vp = pg.getViewport({ scale: 1100 / Math.max(vp0.width, vp0.height) * (land ? 1 : 1) }), c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height; await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise; add.push({ id: uid(), tpl: 'blank', size: sz, bg: c.toDataURL('image/jpeg', .62) }); } } catch (e) { Island.toast({ icon: 'x', c: 'var(--red)', t: 'PDF non letto', s: f.name, ms: 2400 }); } }
@@ -15448,7 +15481,7 @@ ACT.nbRec = async () => { const B = Board, b = B.b; if (!b) return;
   const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '', mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {}), chunks = [], id = uid(), t0 = Date.now();
   mr.ondataavailable = e => e.data && e.data.size && chunks.push(e.data);
   mr.onstop = async () => { stream.getTracks().forEach(t => t.stop()); const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' }), ext = /mp4/.test(blob.type) ? 'm4a' : 'webm', name = `${b.title} · registrazione ${new Date(t0).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.${ext}`, beforeIds = new Set(S.docs.map(d => d.id)), old = UI.docFilter; UI.docFilter = 'all';
-    try { await Docs.upload([new File([blob], name, { type: blob.type })]); } catch (_) {} UI.docFilter = old; const d = S.docs.find(x => !beforeIds.has(x.id)); (b.recs ||= []).push({ id, doc: d ? d.id : null, t0, dur: Math.round((Date.now() - t0) / 1000), name }); B.persist(); Island.toast({ icon: 'mic', c: 'var(--green)', t: 'Registrazione salvata', s: 'Riascoltala da ⋯ → Registrazioni: la scrittura riappare a tempo', ms: 3200 }); };
+    try { await Docs.upload([new File([blob], name, { type: blob.type })]); } catch (_) {} UI.docFilter = old; const d = S.docs.find(x => !beforeIds.has(x.id)); (b.recs ||= []).push({ id, doc: d ? d.id : null, t0, dur: Math.round((Date.now() - t0) / 1000), name }); B.persist(); Island.toast({ icon: 'mic', c: 'var(--green)', t: 'Registrazione salvata', s: 'Tocca 🎧 in alto: ascolti mentre guardi gli appunti', ms: 3200 }); };
   mr.start(1000); B.recOn = { id, t0, mr }; App.render(); Island.toast({ icon: 'mic', c: 'var(--red)', t: '● Sto registrando', s: 'Scrivi pure: ogni tratto resta legato all\'audio', ms: 2600 }); };
 function nbRecs() { const B = Board, b = B.b, L = b.recs || []; let audio = null;
   const sh = openSheet({ title: '🎙 Registrazioni', wide: true, left: { label: 'Chiudi' }, body: L.length ? `<div class="list">${L.map((r, i) => `<div class="row"><button class="btn sm primary" data-rp="${i}">▶︎</button><span class="grow"><div class="t">${esc(new Date(r.t0).toLocaleString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</div><div class="s">${Math.floor(r.dur / 60)}:${String(r.dur % 60).padStart(2, '0')} · ${b.strokes.filter(s => s.rec === r.id).length} tratti</div></span></div>`).join('')}</div><input type="range" id="rpS" min="0" max="1000" value="0" style="width:100%" hidden><p class="muted" style="font-size:13px;margin:0">Mentre ascolti, i tratti non ancora scritti in quel momento sono sbiaditi: segui la lezione come l'hai presa.</p>` : '<p class="muted">Tocca 🎙 nella barra in alto mentre scrivi: l\'audio resta legato a ogni tratto.</p>',
@@ -15465,7 +15498,7 @@ document.addEventListener('keydown', e => { if (UI.view !== 'boards' || !Board.b
   else if ((k === 'delete' || k === 'backspace') && B.sel) { e.preventDefault(); B.doSel('del'); } else if (k === 'escape' && B.sel) B.select(null);
   else if (!m && { l: 'lasso', t: 'text', n: 'tape', x: 'laser' }[k]) { B.tool = { l: 'lasso', t: 'text', n: 'tape', x: 'laser' }[k]; B.paintPalette(); B.menu(); }
   else if (NB.is(B.b) && !m && (k === 'pagedown' || k === 'pageup')) { e.preventDefault(); goPage(B.curPage() + (k === 'pagedown' ? 1 : -1)); } });
-if (typeof FEAT !== 'undefined') { const i = FEAT.findIndex(f => f[2] === 'Mappa concettuale'); FEAT.splice(i >= 0 ? i + 1 : FEAT.length, 0, ['Studio', '📒', 'Quaderni come GoodNotes', 'Pagine e modelli, lazo, forme perfette, testo, immagini, nastro, laser, audio, IA', () => ACT.newBoard()]); }
+if (typeof FEAT !== 'undefined') { const i = FEAT.findIndex(f => f[2] === 'Mappa concettuale'); FEAT.splice(i >= 0 ? i + 1 : FEAT.length, 0, ['Studio', '📒', 'Quaderni a pagine', 'Pagine e modelli, lazo, forme perfette, testo, immagini, nastro, laser, audio, IA', () => ACT.newBoard()]); }
 
 /* =========================================================
    LAVAGNA → QUADERNI · Parte 4: precisione e velocità
@@ -15652,7 +15685,7 @@ document.addEventListener('keydown', e => { const ae = document.activeElement; i
 { const oR = VIEWS.boards.render, oM = VIEWS.boards.mount; VIEWS.boards.render = function () { let h = oR.call(this); h = h.replace('<div class="palette" role="toolbar" aria-label="Strumenti">', `<div class="palette" role="toolbar" aria-label="Strumenti"><button class="tool nb-swap" id="nbSwap" data-act="nbSwap" aria-label="Strumento precedente" title="Strumento precedente (barra spaziatrice)"></button><span class="pdiv"></span>`).replace('<button class="tool" data-act="nbImage"', `<button class="tool" data-act="nbRuler" aria-label="Righello" title="Righello (R)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 15.5l12-12 5 5-12 12z"/><path d="M7 12l2 2M9.5 9.5l1.5 1.5M12 7l2 2M14.5 4.5l1.5 1.5"/></svg></button><button class="tool" data-act="nbImage"`); return h.replace('due dita: tocca per annullare, tre per ripristinare', 'due dita: tocca per annullare, tre per ripristinare · barra spaziatrice o ⇄: strumento precedente · R: righello'); };
   VIEWS.boards.mount = function (root) { const w = $('#boardWrap'), vw = w && w.closest('.view'); if (vw) vw.style.zoom = '1'; /* text size never scales the notebook: the pen must land exactly under the tip */ oM.call(this, root); Board.ensureLive(); Board.paintPalette(); }; }
 { const oMore = ACT.bMore; ACT.bMore = () => { oMore(); const sh = Sheets[Sheets.length - 1], b = Board.b; if (!sh || !b) return; const host = $('.list.flat', sh.el); if (!host) return;
-  host.insertAdjacentHTML('beforeend', `${NB.is(b) ? `<div class="row"><span class="grow"><div class="t">Scorrimento delle pagine</div><div class="s">Una sotto l'altra o una di fianco all'altra</div></span>${seg('nbDir', [['v', 'Verticale'], ['h', 'Orizzontale']], b.dir || 'v')}</div><div class="row"><span class="grow"><div class="t">Nuova pagina scorrendo oltre la fine</div><div class="s">Come in GoodNotes: arrivi in fondo e la pagina appare</div></span>${toggleBtn('nbAA', b.autoAdd !== false)}</div>` : ''}<div class="row"><span class="grow"><div class="t">Nascondi il righello dopo una linea</div></span>${toggleBtn('nbRA', Board.rulerAuto)}</div>`);
+  host.insertAdjacentHTML('beforeend', `${NB.is(b) ? `<div class="row"><span class="grow"><div class="t">Scorrimento delle pagine</div><div class="s">Una sotto l'altra o una di fianco all'altra</div></span>${seg('nbDir', [['v', 'Verticale'], ['h', 'Orizzontale']], b.dir || 'v')}</div><div class="row"><span class="grow"><div class="t">Nuova pagina scorrendo oltre la fine</div><div class="s">Arrivi in fondo e la pagina appare</div></span>${toggleBtn('nbAA', b.autoAdd !== false)}</div>` : ''}<div class="row"><span class="grow"><div class="t">Nascondi il righello dopo una linea</div></span>${toggleBtn('nbRA', Board.rulerAuto)}</div>`);
   wireSeg(sh.el, 'nbDir', v => { const before = b.strokes.slice(), pg = JSON.stringify(b.pages); NB.setDir(b, v); Board.hist.push({ swap: before, after: b.strokes.slice(), pages: pg }); Board.persist(); Board.draw(true); setTimeout(() => goPage(Board.curPage()), 30); });
   const aa = $('#nbAA', sh.el); if (aa) wireToggle(aa, v => { b.autoAdd = v; Board.persist(); }); wireToggle($('#nbRA', sh.el), v => { Board.rulerAuto = v; try { localStorage.setItem('orbita.rulerAuto', v ? '1' : '0'); } catch (_) {} }); }; }
 /* undo of a page operation also restores the direction */
@@ -20830,7 +20863,7 @@ const Bug = {
   async report(what) {
     const ua = navigator.userAgent, plat = window.orbitaDesktop ? `Programma per computer (${window.orbitaDesktop.platform || ''})` : window.OrbitaAndroid ? 'App Android' : /iPad|Macintosh/.test(ua) && navigator.maxTouchPoints > 1 ? 'iPad (browser/Home)' : /iPhone/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android (browser)' : IN_CLAUDE ? 'Dentro Claude' : 'Browser';
     let shell = ''; try { if (window.orbitaDesktop) { const i = await window.orbitaDesktop.info(); shell = i.version; } else if (window.OrbitaAndroid) shell = JSON.parse(window.OrbitaAndroid.info()).version; } catch (_) {}
-    const build = (document.querySelector('meta[name="orbita-build"]') || {}).content || 'artifact';
+    const build = (document.querySelector('meta[name="orbita-build"]') || {}).content || 'artifact' + ' · ' + EDITION;
     const cnt = { eventi: (S.events || []).length, promemoria: (S.tasks || []).length, esami: (S.exams || []).length, note: Object.keys(S.notes || {}).length, lavagne: Object.keys(S.boards || {}).length, documenti: (S.docs || []).length, movimenti: ((S.money || {}).tx || []).length, lingue: (S.langs || []).length, schede: ((S.health || {}).plans || []).length };
     let est = null; try { est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; } catch (_) {}
     const ai = (() => { try { const c = typeof AIK !== 'undefined' && AIK.conf ? AIK.conf() : null; return c && c.provider ? c.provider + (c.model ? ' / ' + c.model : '') : 'nessuna'; } catch (_) { return '?'; } })();
@@ -21655,7 +21688,7 @@ const KATEX = 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js'
 const Formula = {
   ok: null,
   /** the maths font, when it can be loaded; otherwise the readable text version is used */
-  async tex() { if (this.ok !== null) return this.ok; try { if (!document.querySelector(`link[href="${KATEX_CSS}"]`)) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = KATEX_CSS; document.head.appendChild(l); }
+  async tex() { if (this.ok !== null) return this.ok; try { if (!document.querySelector('link[data-katex]')) { await VEND.check(); const l = document.createElement('link'); l.rel = 'stylesheet'; l.dataset.katex = 1; l.href = VEND.url(KATEX_CSS); l.onerror = () => { if (l.href !== KATEX_CSS) l.href = KATEX_CSS; }; document.head.appendChild(l); }
       await Promise.race([loadScript(KATEX), new Promise((_, ko) => setTimeout(() => ko(new Error('timeout')), 7000))]); this.ok = !!window.katex; } catch (_) { this.ok = false; } return this.ok; },
   html(f, display) { if (this.ok && window.katex && f.tex) { try { return window.katex.renderToString(f.tex, { throwOnError: true, displayMode: !!display, output: 'html', strict: 'ignore' }); } catch (_) {} } return `<span class="fx-txt">${esc(f.txt || f.tex || '')}</span>`; },
   key: f => String(f.txt || f.tex || '').toLowerCase().replace(/\s+/g, '').replace(/[·*×]/g, ''),
@@ -22074,7 +22107,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && BFS.on && 
 { const oG = go; go = function (...a) { if (BFS.on) BFS.exit(); return oG.apply(this, a); }; const oR = App.render.bind(App); App.render = function (...a) { if (BFS.on && UI.view === 'boards') return BFS.soft(() => oR(...a)); if (BFS.on) BFS.exit(); return oR(...a); }; }
 /* ---------- toolbar: full-screen button, position of the tools ---------- */
 { const oR = VIEWS.boards.render, oM = VIEWS.boards.mount;
-  VIEWS.boards.render = function () { return oR.call(this).replace('<div class="board-wrap', `<div class="board-wrap pal-${BPal()}`); };
+  const hint = () => ['Penna: scrivi', Board.hold ? 'tieni ferma la punta alla fine per una forma perfetta' : '', Board.scribble ? 'scarabocchia sopra per cancellare' : '', Board.penSeen && !Board.fingerDraw ? 'un dito sposta il foglio, due lo ingrandiscono' : '', Board.tapUndo ? 'due dita: tocca per annullare' : '', 'schermo intero con ⤢ o F', 'gesti e posizione degli strumenti in ⋯'].filter(Boolean).join(' · ') + '.';
+  VIEWS.boards.render = function () { return oR.call(this).replace('<div class="board-wrap', `<div class="board-wrap pal-${BPal()}`).replace(/(<p class="muted nb-hint">)[^<]*(<\/p>)/, (m, a, b) => a + hint() + b); };
   VIEWS.boards.mount = function (root) { oM.call(this, root); BFS.fit(); BFS.btn(); }; }
 function BPal() { try { return localStorage.getItem('orbita.b.pal') || 'bottom'; } catch (_) { return 'bottom'; } }
 { const oMore = ACT.bMore; ACT.bMore = (...a) => { oMore(...a); const sh = Sheets[Sheets.length - 1], host = sh && $('.list.flat', sh.el); if (!host) return;
@@ -22092,6 +22126,1388 @@ Board.armHold = function (D) { clearTimeout(this.holdT); if (!this.hold || !D.st
   this.holdT = setTimeout(() => { if (this.drawing !== D || D.held || D.st.p.length < 12) return; const r = Shape.rec(D.st); if (!r) return; if (D.st.rec) { r.rec = D.st.rec; r.at = D.st.at; } D.st = r; D.held = true; if (navigator.vibrate) try { navigator.vibrate(8); } catch (_) {} this.draw(); }, 850); };
 /* while you write: no confetti raining on the page (it steals frames from the pen) */
 { const oC = confetti; confetti = function (...a) { if (UI.view === 'boards' && (BFS.on || Palm.pen != null || Palm.recent(4000))) return; return oC.apply(this, a); }; }
+
+/* =========================================================================
+   z1_listen — listen to a lecture while you look at your notes
+   - a small floating player ON the page (no sheet covering the notes)
+   - ink not yet written at that moment is faded, the page follows the audio
+   - tap a word you wrote → you hear what the professor was saying then
+   - ±15 s, speed 1×–2×, ticks on the bar where you wrote, resume where you left
+   - lock-screen / headphone controls (Media Session)
+   - while recording: a red pill with the timer and a clear Stop
+   ========================================================================= */
+const HEADPH = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.6"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.6"/></svg>';
+const RP = { audio: null, rec: null, bid: null, seek: false, follow: true, userAt: 0, rate: 1, timer: null, url: null, lastFollow: null,
+  fmt(s) { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; },
+  recs() { const b = Board.b; return (b && b.recs) || []; },
+  dur() { const a = this.audio, r = this.rec; return (a && isFinite(a.duration) && a.duration > 0) ? a.duration : ((r && r.dur) || 0); },
+  now() { return this.audio ? this.audio.currentTime : ((this.rec && this.rec.pos) || 0); },
+  async open(r, at) { const b = Board.b; if (!b) return; r = r || this.recs()[this.recs().length - 1]; if (!r) { Island.toast({ icon: 'mic', c: 'var(--orange)', t: 'Ancora nessuna registrazione', s: 'Tocca 🎙 in alto mentre scrivi: ogni tratto resta legato all\'audio', ms: 3000 }); return; }
+    const d = S.docs.find(x => x.id === r.doc), url = d ? await Docs.url(d) : null;
+    if (!url) { Island.toast({ icon: 'mic', c: 'var(--orange)', t: 'Audio non disponibile qui', s: 'Il file è su un altro dispositivo: aprilo lì una volta con il cloud attivo', ms: 3200 }); return; }
+    this.stop(true); this.rec = r; this.bid = b.id; this.url = url;
+    const a = this.audio = new Audio(url); a.preload = 'auto'; a.playbackRate = this.rate; try { a.preservesPitch = true; a.webkitPreservesPitch = true; } catch (_) {}
+    a.ontimeupdate = () => this.tick(); a.onplay = a.onpause = () => { this.paint(); this.media(); if (a.paused) this.keep(); };
+    a.onloadedmetadata = () => { const p = at != null ? at : (r.pos && r.pos < this.dur() - 3 ? r.pos : 0); try { a.currentTime = p; } catch (_) {} this.paint(); };
+    a.onended = () => { r.pos = 0; this.keep(); Board.play = null; Board.draw(); this.paint(); };
+    a.onerror = () => Island.toast({ icon: 'mic', c: 'var(--red)', t: 'Non riesco a leggere questo audio', s: 'Formato non supportato su questo dispositivo', ms: 3000 });
+    Board.play = { id: r.id, t: (at != null ? at : (r.pos || 0)) * 1000 }; this.paint(); Board.draw();
+    try { await a.play(); } catch (_) { /* iOS may want a second tap: the ▶︎ is right there */ } this.media(); },
+  stop(silent) { const a = this.audio; if (a) { this.keep(); a.pause(); a.src = ''; } this.audio = null; this.rec = null; this.bid = null; this.seek = false; Board.play = null;
+    const p = $('#nbPlayer'); if (p && !Board.recOn) p.remove(); if (!silent) { Board.draw(); this.paint(); } try { navigator.mediaSession.playbackState = 'none'; } catch (_) {} },
+  keep() { const r = this.rec, a = this.audio; if (!r || !a) return; const p = Math.round(a.currentTime); if (r.pos !== p) { r.pos = p; try { Board.persist(); } catch (_) {} } },
+  toggle() { const a = this.audio; if (!a) return this.open(); a.paused ? a.play().catch(() => {}) : a.pause(); },
+  skip(s) { const a = this.audio; if (!a) return; a.currentTime = clamp(a.currentTime + s, 0, this.dur() || 1e9); this.userAt = 0; this.tick(true); },
+  to(sec) { const a = this.audio; if (!a) return; a.currentTime = clamp(sec, 0, this.dur() || 1e9); this.userAt = 0; this.tick(true); if (a.paused) a.play().catch(() => {}); },
+  setRate() { const R = [1, 1.25, 1.5, 1.75, 2, .75]; this.rate = R[(R.indexOf(this.rate) + 1) % R.length]; if (this.audio) this.audio.playbackRate = this.rate; try { localStorage.setItem('orbita.rpRate', this.rate); } catch (_) {} this.paint(); },
+  /* the stroke being written at time t (ms) */
+  current(t) { const b = Board.b, id = this.rec && this.rec.id; if (!b || !id) return null; let best = null; for (const st of b.strokes) if (st.rec === id && st.at <= t && (!best || st.at > best.at)) best = st; return best; },
+  tick(force) { const a = this.audio, r = this.rec; if (!a || !r) return; const t = a.currentTime * 1000; Board.play = { id: r.id, t }; Board.draw();
+    const bar = $('#rpBar'), cur = $('#rpCur'); if (bar && !bar._drag) { bar.value = String(Math.round(a.currentTime / (this.dur() || 1) * 1000)); bar.style.setProperty('--p', bar.value / 10 + '%'); } if (cur) cur.textContent = this.fmt(a.currentTime);
+    try { if (navigator.mediaSession && navigator.mediaSession.setPositionState && this.dur()) navigator.mediaSession.setPositionState({ duration: this.dur(), position: Math.min(a.currentTime, this.dur()), playbackRate: a.playbackRate }); } catch (_) {}
+    if (this.follow && (force || performance.now() - this.userAt > 5000)) this.followInk(t, force); },
+  /* the page follows the lecture: if what you were writing is off screen, go there */
+  followInk(t, force) { const st = this.current(t); if (!st || (!force && st === this.lastFollow)) return; this.lastFollow = st; const sb = strokeBox(st), [x0, y0, x1, y1] = Board.vis(), cx = (sb[0] + sb[2]) / 2, cy = (sb[1] + sb[3]) / 2;
+    if (cx > x0 && cx < x1 && cy > y0 + (y1 - y0) * .06 && cy < y1 - (y1 - y0) * .12) return;
+    const b = Board.b; if (NB.is(b)) { const i = NB.pageAt(b, cx, cy), R = NB.rects(b)[i]; if (Board.curPage() !== i) { goPage(i, true); setTimeout(() => this.followInk(t, true), 300); return; } if (NB.h(b)) return; const v = Board.view; Board.view = { ...v, y: clamp(Board.H * .35 - cy * v.s, Board.H - (R.y + R.h) * v.s - 16, 16 - R.y * v.s) }; Board.draw(); return; }
+    const v = Board.view; Board.view = { ...v, x: Board.W / 2 - cx * v.s, y: Board.H * .4 - cy * v.s }; Board.draw(); },
+  /* tap on what you wrote → jump to that moment (2 s before, so you hear the sentence) */
+  jumpAt(x, y) { const b = Board.b, ids = new Set(this.recs().map(r => r.id)), tol = 26 / Board.view.s; let best = null, bd = tol;
+    for (const st of b.strokes) { if (!st.rec || !ids.has(st.rec) || st.at == null) continue; const sb = strokeBox(st); if (x < sb[0] - tol || x > sb[2] + tol || y < sb[1] - tol || y > sb[3] + tol) continue;
+      let d = (x >= sb[0] && x <= sb[2] && y >= sb[1] && y <= sb[3] && st.t === 'txt') ? 0 : Infinity; const p = st.p || []; for (let i = 0; i + 1 < p.length; i += 3) { const k = Math.hypot(p[i] - x, p[i + 1] - y); if (k < d) d = k; } if (d < bd) { bd = d; best = st; } }
+    if (!best) { Island.toast({ icon: 'mic', t: 'Qui non c\'è audio', s: 'Tocca un tratto scritto durante una registrazione', ms: 1800 }); return; }
+    const sec = Math.max(0, best.at / 1000 - 2); try { navigator.vibrate && navigator.vibrate(8); } catch (_) {} if (!this.rec || best.rec !== this.rec.id) { const r = this.recs().find(z => z.id === best.rec); this.open(r, sec); } else this.to(sec); this.flash(best); },
+  flash(st) { const sb = strokeBox(st), v = Board.view, w = $('#boardWrap'); if (!w) return; const f = document.createElement('div'); f.className = 'rp-flash'; const r = Board.cv.getBoundingClientRect(), wr = w.getBoundingClientRect();
+    Object.assign(f.style, { left: (r.left - wr.left + v.x + sb[0] * v.s - 8) + 'px', top: (r.top - wr.top + v.y + sb[1] * v.s - 8) + 'px', width: ((sb[2] - sb[0]) * v.s + 16) + 'px', height: ((sb[3] - sb[1]) * v.s + 16) + 'px' }); w.appendChild(f); setTimeout(() => f.remove(), 900); },
+  media() { const ms = navigator.mediaSession, r = this.rec, a = this.audio; if (!ms || !r || !a) return; try { if (typeof MediaMetadata !== 'undefined') ms.metadata = new MediaMetadata({ title: (Board.b && Board.b.title) || 'Registrazione', artist: new Date(r.t0).toLocaleString('it-IT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }), album: 'Orbita' });
+    ms.playbackState = a.paused ? 'paused' : 'playing'; const H = { play: () => a.play(), pause: () => a.pause(), seekbackward: () => this.skip(-15), seekforward: () => this.skip(15), seekto: e => this.to(e.seekTime) };
+    for (const k in H) { try { ms.setActionHandler(k, H[k]); } catch (_) {} } } catch (_) {} },
+  ticks() { const b = Board.b, r = this.rec, D = this.dur(); if (!b || !r || !D) return ''; const set = new Set(); for (const st of b.strokes) if (st.rec === r.id && st.at != null) set.add(Math.round(st.at / 1000 / D * 160)); return [...set].slice(0, 160).map(k => `<i style="left:${(k / 160 * 100).toFixed(2)}%"></i>`).join(''); },
+  /* the floating pill: player, or recording timer */
+  paint() { const w = $('#boardWrap'); let p = $('#nbPlayer'); const on = this.audio && this.rec && Board.b && this.bid === Board.b.id;
+    if (Board.recOn) { if (!p) { w && w.insertAdjacentHTML('beforeend', '<div class="nb-player rec" id="nbPlayer"></div>'); p = $('#nbPlayer'); } if (!p) return; p.className = 'nb-player rec';
+      p.innerHTML = `<span class="rp-dot"></span><b class="rp-rt" id="rpRt">${this.fmt((Date.now() - Board.recOn.t0) / 1000)}</b><span class="rp-rs">Sto registrando · scrivi pure</span><button class="rp-stop" data-rpa="stopRec">Stop</button>`; this.wire(p);
+      clearInterval(this.timer); this.timer = setInterval(() => { const e = $('#rpRt'); if (!Board.recOn) { clearInterval(this.timer); this.paint(); return; } if (e) e.textContent = this.fmt((Date.now() - Board.recOn.t0) / 1000); }, 1000); return; }
+    clearInterval(this.timer); if (!on) { if (p) p.remove(); return; }
+    if (!p) { if (!w) return; w.insertAdjacentHTML('beforeend', '<div class="nb-player" id="nbPlayer"></div>'); p = $('#nbPlayer'); }
+    const a = this.audio, L = this.recs(), D = this.dur(), i = L.indexOf(this.rec);
+    p.className = 'nb-player';
+    p.innerHTML = `<button class="rp-b rp-pp" data-rpa="pp" aria-label="${a.paused ? 'Riproduci' : 'Pausa'}">${ico(a.paused ? 'play' : 'pause')}</button>
+      <button class="rp-b" data-rpa="back" aria-label="Indietro 15 secondi">↺<small>15</small></button>
+      <div class="rp-mid"><div class="rp-t"><span id="rpCur">${this.fmt(a.currentTime)}</span><button class="rp-name" data-rpa="list" ${L.length > 1 ? '' : 'disabled'}>${L.length > 1 ? `Registrazione ${i + 1} di ${L.length} ▾` : esc(new Date(this.rec.t0).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</button><span>${this.fmt(D)}</span></div>
+        <div class="rp-bar"><div class="rp-ticks">${this.ticks()}</div><input type="range" id="rpBar" min="0" max="1000" value="${Math.round(a.currentTime / (D || 1) * 1000)}" aria-label="Posizione"></div></div>
+      <button class="rp-b rp-fwd" data-rpa="fwd" aria-label="Avanti 15 secondi"><small>15</small>↻</button>
+      <button class="rp-b rp-rate" data-rpa="rate" aria-label="Velocità">${String(this.rate).replace('.', ',')}×</button>
+      <button class="rp-b" data-rpa="seek" aria-pressed="${this.seek}" aria-label="Tocca la scrittura per saltare a quel momento" title="Tocca un tratto: senti cosa si diceva mentre lo scrivevi">👆</button>
+      <button class="rp-b" data-rpa="x" aria-label="Chiudi">${ico('x')}</button>`;
+    this.wire(p); const bar = $('#rpBar', p);
+    bar.addEventListener('pointerdown', () => bar._drag = true); const end = () => { bar._drag = false; }; bar.addEventListener('pointerup', end); bar.addEventListener('change', end);
+    bar.style.setProperty('--p', bar.value / 10 + '%'); bar.oninput = () => { bar.style.setProperty('--p', bar.value / 10 + '%'); const s = +bar.value / 1000 * (this.dur() || 0); $('#rpCur').textContent = this.fmt(s); if (this.audio) { this.audio.currentTime = s; this.userAt = 0; this.tick(true); } };
+    $('#boardWrap').classList.toggle('rp-seek', this.seek); },
+  wire(p) { $$('[data-rpa]', p).forEach(bt => bt.onclick = e => { e.stopPropagation(); const k = bt.dataset.rpa;
+    if (k === 'pp') this.toggle(); else if (k === 'back') this.skip(-15); else if (k === 'fwd') this.skip(15); else if (k === 'rate') this.setRate(); else if (k === 'x') this.stop(); else if (k === 'stopRec') ACT.nbRec();
+    else if (k === 'seek') { this.seek = !this.seek; this.paint(); if (this.seek) Island.toast({ icon: 'pencil', t: 'Tocca la scrittura', s: 'Senti cosa si diceva mentre la scrivevi · la penna non disegna finché è attivo', ms: 2600 }); }
+    else if (k === 'list') this.pick(); }); },
+  pick() { const L = this.recs(), b = Board.b; const sh = openSheet({ title: '🎧 Registrazioni', left: { label: 'Chiudi' }, body: `<div class="list">${L.map((r, i) => `<button class="row" data-rpi="${i}" aria-current="${r === this.rec}"><span class="tile-ico" style="background:var(--pink)">${HEADPH}</span><span class="grow"><div class="t">${esc(new Date(r.t0).toLocaleString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</div><div class="s">${this.fmt(r.dur)} · ${b.strokes.filter(s => s.rec === r.id).length} tratti${r.pos ? ' · eri a ' + this.fmt(r.pos) : ''}</div></span>${r === this.rec ? '<span class="pill">In ascolto</span>' : ico('right', 'sm')}</button>`).join('')}</div>`,
+    onMount: el => $$('[data-rpi]', el).forEach(x => x.onclick = () => { sh.close(); this.open(L[+x.dataset.rpi]); }) }); },
+  /* the headphones button in the top bar, only when there is something to listen to */
+  fit() { const b = Board.b, m = $('#boardWrap [data-act=nbRec]'); if (!b || !m) return; const has = (b.recs || []).length; let h = $('#boardWrap [data-act=nbListen]');
+    if (has && !h && innerWidth <= 640) { const t = $('#boardWrap .board-top > .glass'); if (t) { t.insertAdjacentHTML('afterend', `<div class="glass"><button class="icon-btn" data-act="nbListen" aria-label="Ascolta le registrazioni" style="color:var(--pink)">${HEADPH}</button></div>`); h = $('#boardWrap [data-act=nbListen]'); } }
+    if (has && !h) { m.insertAdjacentHTML('afterend', `<button class="icon-btn" data-act="nbListen" aria-label="Ascolta le registrazioni" title="Ascolta mentre guardi gli appunti" style="color:var(--pink)">${HEADPH}</button>`); h = $('#boardWrap [data-act=nbListen]'); }
+    if (h) h.classList.toggle('on', !!this.audio); },
+};
+try { const r = +localStorage.getItem('orbita.rpRate'); if (r) RP.rate = r; } catch (_) {}
+ACT.nbListen = () => { if (RP.audio && RP.bid === (Board.b && Board.b.id)) { RP.toggle(); return; } RP.open(); };
+/* ⋯ → Registrazioni now opens the player on the page instead of a sheet over the notes */
+nbRecs = function () { const L = RP.recs(); if (L.length <= 1) RP.open(L[0]); else RP.pick(); };
+/* recording: the red pill appears/disappears with it; after saving, the 🎧 shows up */
+{ const oRec = ACT.nbRec; ACT.nbRec = async (...a) => { const was = !!Board.recOn; if (!was && RP.audio) RP.audio.pause(); const r = await oRec(...a); setTimeout(() => { RP.paint(); RP.fit(); }, 60); if (was) { const t0 = Date.now(), wait = () => { RP.fit(); if (Date.now() - t0 < 8000 && !$('#boardWrap [data-act=nbListen]')) setTimeout(wait, 400); }; wait(); } return r; }; }
+/* re-attach after every redraw of the page; leaving the board pauses */
+{ const oM = VIEWS.boards.mount; VIEWS.boards.mount = function (root) { oM.call(this, root); if (RP.bid && (!Board.b || RP.bid !== Board.b.id)) RP.stop(true); RP.fit(); RP.paint(); }; }
+{ const oU = Board.unmount.bind(Board); Board.unmount = function (...a) { if (RP.audio) { RP.keep(); RP.audio.pause(); } return oU(...a); }; }
+{ const oG = go; go = function (v, ...a) { if (v !== 'boards' && RP.audio) RP.stop(true); return oG.call(this, v, ...a); }; }
+/* the user moving the page: stop following for a few seconds */
+{ const d0 = Board.down.bind(Board), m0 = Board.move.bind(Board), u0 = Board.up.bind(Board); let T = null;
+  Board.down = function (e) { if (RP.audio) RP.userAt = performance.now();
+    if (RP.seek && RP.audio) { const [x, y] = this.toWorld(e); T = { id: e.pointerId, cx: e.clientX, cy: e.clientY, x, y, t: performance.now(), pen: e.pointerType !== 'touch' }; if (T.pen) return; }
+    return d0(e); };
+  Board.move = function (e) { if (RP.audio) RP.userAt = performance.now(); if (T && T.id === e.pointerId && T.pen) return; return m0(e); };
+  Board.up = function (e) { if (T && T.id === e.pointerId) { const t = T; T = null; if (Math.hypot(e.clientX - t.cx, e.clientY - t.cy) < 10 && performance.now() - t.t < 450) RP.jumpAt(t.x, t.y); if (t.pen) return; } return u0(e); }; }
+document.addEventListener('wheel', e => { if (RP.audio && e.target && e.target.id === 'boardCv') RP.userAt = performance.now(); }, { capture: true, passive: true });
+/* space bar = play/pause while listening */
+document.addEventListener('keydown', e => { if (!RP.audio || UI.view !== 'boards' || /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '') || document.activeElement?.isContentEditable) return;
+  if (e.key === ' ') { e.preventDefault(); RP.toggle(); } else if (e.key === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); RP.skip(-15); } else if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); RP.skip(15); } });
+
+/* =========================================================================
+   z2_lesson — the lecture, start to finish
+   1. "Inizia lezione": from the timetable Orbita knows which course is on
+      now → the course notebook opens on a fresh page with date and title,
+      the recording starts, Orbita's own alerts go quiet until the end.
+   2. Transcription tied to the ink: while you record (or later) the audio
+      becomes text in short timed sentences; search a word the professor
+      said and jump there, with the page showing what you were writing.
+   3. Lesson summary: what was said + what you wrote, with what was said
+      but NOT written, possible exam questions and announcements → tasks.
+   ========================================================================= */
+const LTX_SEG = 45; /* seconds per piece of audio sent to the AI */
+/* ---------------- transcription engine ---------------- */
+const LTx = {
+  live: null, q: Promise.resolve(), buf: {}, err: 0,
+  can() { return !IN_CLAUDE && !!SpeechX.aiProv(); },
+  /* one AI call with audio, with the same model fallbacks as the dictation */
+  async ask(ask, b64, maxTok = 1800) { const p = SpeechX.aiProv(); if (!p) throw { code: 'not_configured' };
+    const body = m => ({ model: m, temperature: 0, max_tokens: maxTok, messages: [{ role: 'user', content: [{ type: 'text', text: ask }, { type: 'input_audio', input_audio: { data: b64, format: 'wav' } }] }] });
+    const tried = new Set(); let model = p === 'gemini' ? (SpeechX._gm || await AIX.alt('gemini', tried, false) || 'gemini-2.5-flash') : 'google/gemini-2.5-flash';
+    for (let n = 0; n < 3; n++) { tried.add(model); const r = await AIX.T.ai.chat('lt' + Date.now().toString(36) + n, p, body(model));
+      if (r && r.ok) { if (p === 'gemini') SpeechX._gm = model; const m = (((r.json || {}).choices || [])[0] || {}).message; return String((m && m.content) || '').trim(); }
+      if (p === 'gemini' && r && (r.code === 'model_not_found' || AIX.busy(r))) { const alt = await AIX.alt('gemini', tried, false); if (alt) { model = alt; continue; } }
+      throw { code: r && r.code || 'network', message: (r && r.message) || '' }; }
+    throw { code: 'network' }; },
+  /* the whole recording as 16 kHz mono samples */
+  async pcm(blob) { const ab = await blob.arrayBuffer(), AC = window.AudioContext || window.webkitAudioContext; let C, buf;
+    try { C = new AC({ sampleRate: 16000 }); } catch (_) { C = new AC(); }
+    try { buf = await new Promise((ok, no) => { const p = C.decodeAudioData(ab, ok, no); if (p && p.then) p.then(ok, no); }); } finally { try { C.close(); } catch (_) {} }
+    if (buf.sampleRate === 16000 && buf.numberOfChannels === 1) return { d: buf.getChannelData(0), sec: buf.duration };
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext, len = Math.max(1, Math.ceil(buf.duration * 16000)), off = new OAC(1, len, 16000), src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+    const r = await off.startRendering(); return { d: r.getChannelData(0), sec: buf.duration }; },
+  wav(d, a = 0, b = d.length) { const n = Math.max(0, b - a); let pk = 0; for (let i = a; i < b; i++) { const v = d[i] < 0 ? -d[i] : d[i]; if (v > pk) pk = v; } const g = pk > 0 && pk < .5 ? Math.min(6, .7 / pk) : 1;
+    const out = new DataView(new ArrayBuffer(44 + n * 2)), w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); out.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, 16000, true); out.setUint32(28, 32000, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) { const v = Math.max(-1, Math.min(1, d[a + i] * g)); out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+    const u8 = new Uint8Array(out.buffer); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return { b64: btoa(s), loud: pk }; },
+  ASK: `Trascrivi parola per parola questo pezzo di una lezione universitaria (lingua: italiano; può contenere termini tecnici, formule e numeri: scrivili come si leggono, es. "sigma uguale M su W"). Dividi in frasi brevi. Ogni riga inizia con il secondo, dall'inizio di QUESTO audio, in cui comincia la frase, tra parentesi quadre: [0] Buongiorno a tutti. [6] Oggi parliamo di travi inflesse. Niente commenti, niente traduzioni. Se non parla nessuno rispondi solo: [silenzio]`,
+  parse(txt, off, len) { txt = String(txt || '').replace(/```[a-z]*|```/g, '').trim(); if (!txt || /^\[?silenzio\]?\.?$/i.test(txt)) return [];
+    const out = [], rx = /\[(\d{1,3}(?:[.,]\d+)?|\d{1,2}:\d{2})\]\s*([^[]+)/g; let m;
+    while ((m = rx.exec(txt))) { const raw = m[1], s = raw.includes(':') ? hm2m(raw.padStart(5, '0')) : parseFloat(raw.replace(',', '.')), t = m[2].replace(/\s+/g, ' ').trim(); if (t && !/^silenzio$/i.test(t)) out.push({ s: Math.round((off + clamp(s || 0, 0, len)) * 10) / 10, t }); }
+    if (!out.length) { const parts = txt.split(/(?<=[.!?…])\s+/).filter(Boolean), tot = parts.reduce((a, p) => a + p.length, 0) || 1; let acc = 0; for (const p of parts) { out.push({ s: Math.round((off + acc / tot * len) * 10) / 10, t: p.trim() }); acc += p.length; } }
+    for (let i = 1; i < out.length; i++) if (out[i].s < out[i - 1].s) out[i].s = out[i - 1].s; return out; },
+  async piece(d, a, b, off, len) { const { b64, loud } = this.wav(d, a, b); if (loud < .01) return []; return this.parse(await this.ask(this.ASK, b64), off, len); },
+  merge(r, segs, from, to) { r.tx = (r.tx || []).filter(x => x.s < from || x.s >= to).concat(segs).sort((x, y) => x.s - y.s); (r.txCov ||= []).push([Math.round(from), Math.round(to)]); r.txCov = this.join(r.txCov); },
+  join(C) { C = C.slice().sort((a, b) => a[0] - b[0]); const o = []; for (const c of C) { const l = o[o.length - 1]; if (l && c[0] <= l[1] + 1) l[1] = Math.max(l[1], c[1]); else o.push(c.slice()); } return o; },
+  covered(r, a, b) { let n = 0; for (const [x, y] of r.txCov || []) n += Math.max(0, Math.min(b, y) - Math.max(a, x)); return n >= (b - a) * .8; },
+  done(r) { return !!r && (r.txOk || this.covered(r, 0, Math.max(1, (r.dur || 1) - 2))); },
+  pct(r) { const D = Math.max(1, r.dur || 1); let n = 0; for (const [x, y] of r.txCov || []) n += Math.max(0, Math.min(D, y) - Math.max(0, x)); return Math.min(1, n / D); },
+  /* afterwards: the whole recording, skipping what the live pass already did */
+  async run(b, r, onP) { if (!this.can()) throw { code: 'no_audio_ai' }; const d0 = S.docs.find(x => x.id === r.doc), blob = d0 && await docBlob(d0); if (!blob) throw { code: 'no_audio' };
+    const { d, sec } = await this.pcm(blob); r.dur = Math.round(sec) || r.dur; const N = Math.ceil(sec / LTX_SEG); let k = 0;
+    for (let i = 0; i < N; i++) { const a = i * LTX_SEG, e = Math.min(sec, a + LTX_SEG); if (this.covered(r, a, e)) { k++; continue; } onP && onP(k / N, a);
+      try { this.merge(r, await this.piece(d, Math.floor(a * 16000), Math.floor(e * 16000), a, e - a), a, e); this.err = 0; } catch (err) { if (++this.err >= 3) { Board.persist && Board.b === b ? Board.persist() : save('board-' + b.id); throw err; } i--; await new Promise(z => setTimeout(z, 1500 * this.err)); continue; }
+      k++; if (Board.b === b) Board.persist(); else { b.updated = Date.now(); save('board-' + b.id); } onP && onP(k / N, e); RP.txPaint && RP.txPaint(); }
+    r.txOk = true; if (Board.b === b) Board.persist(); else save('board-' + b.id); return r.tx || []; },
+  /* during the recording: every 45 s a piece goes to the AI in the background */
+  startLive(stream, recId, t0) { if (!this.can() || !window.MediaRecorder) return; this.stopLive(); const L = this.live = { stream, recId, t0, on: true, mr: null };
+    const mt = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+    const next = () => { if (!L.on) return; const ch = [], at = (Date.now() - t0) / 1000; let mr; try { mr = new MediaRecorder(stream, mt ? { mimeType: mt } : undefined); } catch (_) { return; } L.mr = mr;
+      mr.ondataavailable = e => { if (e.data && e.data.size) ch.push(e.data); };
+      mr.onstop = () => { const to = (Date.now() - t0) / 1000, blob = new Blob(ch, { type: mr.mimeType || 'audio/webm' }); this.q = this.q.then(() => this.livePiece(recId, blob, at, to)).catch(() => {}); next(); };
+      mr.start(); L.tm = setTimeout(() => { try { mr.state !== 'inactive' && mr.stop(); } catch (_) {} }, LTX_SEG * 1000); };
+    next(); },
+  stopLive() { const L = this.live; if (!L) return; L.on = false; clearTimeout(L.tm); try { L.mr && L.mr.state !== 'inactive' && L.mr.stop(); } catch (_) {} this.live = null; },
+  async livePiece(recId, blob, at, to) { const B = (this.buf[recId] ||= { tx: [], cov: [] }); try { const { d, sec } = await this.pcm(blob); const segs = await this.piece(d, 0, d.length, at, sec || (to - at)); B.tx.push(...segs); B.cov.push([Math.round(at), Math.round(to)]); } catch (_) { /* the gap is filled afterwards */ } this.attach(); },
+  /* the recording's entry is created when it is saved: hand it what the live pass wrote */
+  attach() { for (const [id, B] of Object.entries(this.buf)) { for (const b of Object.values(S.boards || {})) { const r = (b.recs || []).find(x => x.id === id); if (!r) continue;
+      r.tx = (r.tx || []).concat(B.tx).sort((x, y) => x.s - y.s); r.txCov = this.join((r.txCov || []).concat(B.cov)); B.tx = []; B.cov = []; if (Board.b === b) Board.persist(); else save('board-' + b.id); RP.txPaint && RP.txPaint(); } } },
+  /* search what was said, in every notebook */
+  hits(q, max = 40) { const n = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''), Q = n(q).trim(); if (Q.length < 2) return []; const out = [];
+    for (const b of Object.values(S.boards || {})) for (const r of b.recs || []) for (const x of r.tx || []) if (n(x.t).includes(Q)) { out.push({ b, r, s: x.s, t: x.t }); if (out.length >= max) return out; }
+    return out; },
+  /* the page you were on at that second */
+  pageAt(b, r, sec) { if (!NB.is(b)) return null; let best = null; for (const st of b.strokes) if (st.rec === r.id && st.at != null && st.at <= sec * 1000 + 4000 && (!best || st.at > best.at)) best = st; if (!best) return null; const sb = strokeBox(best); return NB.pageAt(b, (sb[0] + sb[2]) / 2, (sb[1] + sb[3]) / 2); },
+  plain(r, max = 60000) { let s = ''; for (const x of r.tx || []) { s += `[${RP.fmt(x.s)}] ${x.t}\n`; if (s.length > max) break; } return s; },
+};
+/* open a moment of a recording, anywhere in the app */
+async function openMoment(b, r, sec) { if (UI.view !== 'boards' || UI.board !== b.id) { Board.unmount(); UI.board = b.id; Board.hist = []; Board.fut = []; go('boards'); await new Promise(z => setTimeout(z, 260)); }
+  const i = LTx.pageAt(b, r, sec); if (i != null && Board.curPage() !== i) goPage(i, true); await RP.open(r, Math.max(0, sec - 1)); }
+/* ---------------- the transcript panel next to the page ---------------- */
+Object.assign(RP, {
+  txOn: false, txQ: '',
+  txToggle() { this.txOn = !this.txOn; this.txPaint(); this.paint(); },
+  txPaint() { const w = $('#boardWrap'); let P = $('#rpTx'); const r = this.rec, b = Board.b; if (!this.txOn || !r || !w || !b) { if (P) P.remove(); w && w.classList.remove('rp-txon'); return; }
+    if (!P) { w.insertAdjacentHTML('beforeend', `<aside class="rp-tx" id="rpTx" aria-label="Trascrizione"><div class="rp-tx-h"><b>📝 Detto a lezione</b><button class="icon-btn" data-txa="sum" title="Riassunto della lezione" aria-label="Riassunto" style="color:var(--purple)">${ico('spark')}</button><button class="icon-btn" data-txa="x" aria-label="Chiudi">${ico('x')}</button></div><input class="input" id="rpTxQ" placeholder="Cerca una parola detta…" autocomplete="off"><div class="rp-tx-st" id="rpTxSt"></div><div class="rp-tx-l" id="rpTxL"></div></aside>`); P = $('#rpTx');
+      const q = $('#rpTxQ', P); q.value = this.txQ; q.oninput = () => { this.txQ = q.value; this.txList(); };
+      $$('[data-txa]', P).forEach(x => x.onclick = () => { if (x.dataset.txa === 'x') this.txToggle(); else Lesson.summary(Board.b, this.rec); }); }
+    w.classList.add('rp-txon'); this.txList(); },
+  txList() { const P = $('#rpTx'), r = this.rec, b = Board.b; if (!P || !r) return; const L = r.tx || [], st = $('#rpTxSt', P), q = this.txQ.trim();
+    const pc = Math.round(LTx.pct(r) * 100), busy = Lesson.busy === r.id;
+    st.innerHTML = busy ? `<span class="spin"></span> Trascrivo… ${pc}%` : LTx.done(r) ? `${L.length} frasi · tocca una frase per sentirla` : LTx.can() ? `${pc ? `Trascritto ${pc}% · ` : ''}<button class="btn sm primary" data-txgo>${pc ? 'Completa' : 'Trascrivi la lezione'}</button>` : 'Per trascrivere serve Google Gemini (o OpenRouter) in Impostazioni → IA: l\'audio non può essere letto dall\'IA di Claude.';
+    const go = $('[data-txgo]', st); if (go) go.onclick = () => Lesson.transcribe(b, r);
+    const n = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''), Q = n(q), rows = Q.length >= 2 ? L.filter(x => n(x.t).includes(Q)) : L;
+    const mk = x => { let h = esc(x.t); if (Q.length >= 2) { const i = n(x.t).indexOf(Q); if (i >= 0) h = esc(x.t.slice(0, i)) + '<mark>' + esc(x.t.slice(i, i + q.length)) + '</mark>' + esc(x.t.slice(i + q.length)); } const pg = Q.length >= 2 ? LTx.pageAt(b, r, x.s) : null; return `<button class="rp-tx-r" data-txs="${x.s}"><time>${this.fmt(x.s)}</time><span>${h}${pg != null ? ` <small>· p. ${pg + 1}</small>` : ''}</span></button>`; };
+    $('#rpTxL', P).innerHTML = rows.length ? rows.map(mk).join('') : (Q.length >= 2 ? '<p class="muted">Nessuna frase con questa parola.</p>' : '');
+    $$('[data-txs]', P).forEach(x => x.onclick = () => { const s = +x.dataset.txs, i = LTx.pageAt(b, r, s); if (i != null && Board.curPage() !== i) goPage(i, true); this.to(Math.max(0, s - 1)); });
+    this.txCur(true); },
+  txCur(force) { const P = $('#rpTx'); if (!P || !this.audio) return; const t = this.audio.currentTime; let cur = null; $$('[data-txs]', P).forEach(x => { if (+x.dataset.txs <= t + .3) cur = x; x.classList.remove('cur'); }); if (cur) { cur.classList.add('cur'); if (!this.txQ.trim() && (force || performance.now() - (this.txUser || 0) > 4000)) { const L = $('#rpTxL', P), top = cur.offsetTop - L.offsetTop; if (top < L.scrollTop + 20 || top > L.scrollTop + L.clientHeight - 60) L.scrollTop = top - 60; } } },
+});
+{ const oT = RP.tick.bind(RP); RP.tick = function (f) { oT(f); this.txCur(); }; const oP = RP.paint.bind(RP); RP.paint = function () { oP(); const p = $('#nbPlayer'); if (p && !p.classList.contains('rec') && !$('[data-rpa=tx]', p)) { const x = $('[data-rpa=x]', p); x && x.insertAdjacentHTML('beforebegin', `<button class="rp-b" data-rpa="tx" aria-pressed="${this.txOn}" aria-label="Trascrizione" title="Trascrizione e ricerca di quello che è stato detto">📝</button>`); $('[data-rpa=tx]', p).onclick = e => { e.stopPropagation(); this.txToggle(); }; } this.txPaint(); };
+  const oS = RP.stop.bind(RP); RP.stop = function (q) { oS(q); const P = $('#rpTx'); if (P) P.remove(); const w = $('#boardWrap'); w && w.classList.remove('rp-txon'); }; }
+document.addEventListener('scroll', e => { if (e.target && e.target.id === 'rpTxL') RP.txUser = performance.now(); }, true);
+/* ---------------- the lesson ---------------- */
+const Lesson = {
+  cur: null, busy: null,
+  P() { return Object.assign({ rec: true, tx: true, quiet: true }, S.profile.lesson || {}); },
+  courseOf(x) { const e = x.ev || {}; if (e.course) { const c = Courses.get(e.course); if (c) return c; } const t = String(x.title || '').toLowerCase().trim(); return S.courses.find(c => c.name.toLowerCase().trim() === t) || S.courses.find(c => t && (t.includes(c.name.toLowerCase()) || c.name.toLowerCase().includes(t))) || null; },
+  /* lessons of today with their course; now = going on (or starting within 20 min) */
+  today() { const m = new Date().getHours() * 60 + new Date().getMinutes(); return itemsOn(todayK()).filter(x => x.kind === 'event' && !x.allDay && x.s).map(x => ({ x, c: this.courseOf(x), s: hm2m(x.s), e: x.e ? hm2m(x.e) : hm2m(x.s) + 90 })).filter(o => o.c).map(o => ({ ...o, now: m >= o.s - 20 && m <= o.e, past: m > o.e })); },
+  now() { return this.today().find(o => o.now) || null; },
+  book(c) { const L = Object.values(S.boards || {}).filter(b => b.course === c.id && NB.is(b)).sort((a, b) => (b.updated || 0) - (a.updated || 0)); if (L[0]) return L[0];
+    const b = NB.make({ title: c.name, cover: c.color || '#0A84FF', folder: 'Lezioni' }); b.course = c.id; S.boards[b.id] = b; save('board-' + b.id); return b; },
+  /* a clean page at the end, with the day on top */
+  page(b, c, o) { const last = b.pages.length - 1, empty = !NB.strokesOf(b, last).length; let i = last; if (!empty) { const p = b.pages[last]; i = NB.addPage(b, b.pages.length, NB.newPage(p.bg ? 'lines' : (p.tpl || 'lines'), p.size || 'a4')); }
+    const R = NB.rects(b)[i], d = new Date(), when = `${cap(DOW[d.getDay()])} ${d.getDate()} ${MONTHS[d.getMonth()]}${o ? ` · ${m2hm(o.s)}–${m2hm(o.e)}` : ''}`;
+    b.strokes.push({ t: 'txt', al: 'l', c: c.color || '#0A84FF', w: 24, b: true, s: c.name, p: [r1(R.x + 52), r1(R.y + 30), .5] }, { t: 'txt', al: 'l', c: '#8E8E93', w: 15, s: when, p: [r1(R.x + 52), r1(R.y + 64), .5] });
+    b.pages[i].title = `Lezione ${d.getDate()} ${MON_S[d.getMonth()]}`; return i; },
+  async start(c, o) { const P = this.P(), b = this.book(c), i = this.page(b, c, o), id = uid(); (b.lessons ||= []).push({ id, d: todayK(), page: b.pages[i].id, ev: o ? o.x.ev.id : null, at: Date.now() }); b.updated = Date.now(); save('board-' + b.id);
+    if (RP.audio) RP.stop(true); if (BFS.on) BFS.exit(); Board.unmount(); UI.board = b.id; Board.hist = []; Board.fut = []; go('boards'); await new Promise(z => setTimeout(z, 280)); goPage(i); Board.tool = 'pen'; Board.paintPalette && Board.paintPalette();
+    const endAt = o ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() + o.e * 60e3; })() : Date.now() + 2 * 36e5;
+    this.cur = { id, bid: b.id, cid: c.id, endAt, quiet: P.quiet }; try { localStorage.setItem('orbita.lesson', JSON.stringify(this.cur)); } catch (_) {}
+    if (P.rec && !Board.recOn) { this.wantTx = P.tx; try { await ACT.nbRec(); } finally { this.wantTx = false; } const L = b.lessons[b.lessons.length - 1]; if (Board.recOn) { L.rec = Board.recOn.id; this.cur.rec = Board.recOn.id; b.updated = Date.now(); save('board-' + b.id); } }
+    this.arm(); Island.toast({ icon: 'grad', c: c.color || 'var(--accent)', t: `Lezione di ${c.name}`, s: [Board.recOn ? '● registro' : '', this.cur.quiet ? 'avvisi in pausa' : '', o ? 'fino alle ' + m2hm(o.e) : ''].filter(Boolean).join(' · ') || 'Buona lezione', ms: 3200 }); Game.add(3, 'Lezione iniziata', { icon: 'grad' }); },
+  /* at the end: ask to stop; 15 minutes later stop anyway, so a forgotten mic doesn't record the whole afternoon */
+  arm() { clearTimeout(this.t1); clearTimeout(this.t2); const L = this.cur; if (!L) return; const now = Date.now();
+    this.t1 = setTimeout(() => { if (this.cur !== L) return; if (Board.recOn) Island.toast({ icon: 'mic', c: 'var(--red)', t: 'La lezione è finita', s: 'Fermo la registrazione?', ms: 9000, action: { label: 'Fine lezione', fn: () => this.end() } }); else this.end(); }, Math.max(1000, L.endAt - now));
+    this.t2 = setTimeout(() => { if (this.cur === L) this.end(); }, Math.max(5000, L.endAt + 15 * 60e3 - now)); },
+  async end() { const L = this.cur; if (!L) return; this.cur = null; clearTimeout(this.t1); clearTimeout(this.t2); try { localStorage.removeItem('orbita.lesson'); } catch (_) {}
+    if (Board.recOn && (!L.rec || Board.recOn.id === L.rec)) { this.ending = L; try { await ACT.nbRec(); } finally { this.ending = null; } } },
+  quiet() { const L = this.cur; return !!(L && L.quiet && Date.now() < L.endAt + 60e3); },
+  /* recording saved → what next */
+  async after(recId) { const b = Object.values(S.boards || {}).find(x => (x.recs || []).some(r => r.id === recId)); if (!b) return; const r = b.recs.find(x => x.id === recId), c = b.course && Courses.get(b.course);
+    const sh = openSheet({ title: '🎓 Lezione salvata', left: { label: 'Più tardi' }, body: `<div class="dt-hero"><b>${RP.fmt(r.dur)}</b><span class="muted">${esc(c ? c.name : b.title)} · ${b.strokes.filter(s => s.rec === r.id).length} tratti legati all'audio</span></div>
+      <div class="list"><button class="row" id="lsSum"><span class="tile-ico" style="background:var(--purple)">${ico('spark')}</span><span class="grow"><div class="t">Riassunto della lezione</div><div class="s">${LTx.can() ? 'Trascrivo l\'audio e lo unisco ai tuoi appunti: cosa è stato detto e non hai scritto, domande d\'esame, avvisi' : 'Dai tuoi appunti (per usare anche l\'audio collega Google Gemini)'}</div></span>${ico('right', 'sm')}</button>
+      <button class="row" id="lsListen"><span class="tile-ico" style="background:var(--pink)">${HEADPH}</span><span class="grow t">Riascolta con gli appunti</span>${ico('right', 'sm')}</button></div>`,
+      onMount: el => { $('#lsSum', el).onclick = () => { sh.close(); this.summary(b, r); }; $('#lsListen', el).onclick = () => { sh.close(); openMoment(b, r, 0); }; } }); },
+  async transcribe(b, r, quiet) { if (this.busy) return false; if (!LTx.can()) { Island.toast({ icon: 'spark', c: 'var(--orange)', t: 'Serve Google Gemini per l\'audio', s: 'Impostazioni → IA: collega una chiave Gemini (o OpenRouter)', ms: 3600 }); return false; }
+    this.busy = r.id; RP.txPaint(); let ok = true;
+    try { await LTx.run(b, r, (p) => { const st = $('#rpTxSt'); if (st) st.innerHTML = `<span class="spin"></span> Trascrivo… ${Math.round(p * 100)}%`; }); }
+    catch (e) { ok = false; e && e.code === 'no_audio' ? Island.toast({ icon: 'mic', c: 'var(--orange)', t: 'Audio non disponibile qui', ms: 2600 }) : aiError(e); }
+    this.busy = null; RP.txPaint(); if (ok && !quiet) Island.toast({ icon: 'check', c: 'var(--green)', t: 'Lezione trascritta', s: `${(r.tx || []).length} frasi · cercale con 📝 o ⌘K`, ms: 2600 }); return ok; },
+  /* pages written during that recording, as pictures for the AI */
+  async shots(b, r, max = 4) { if (!NB.is(b)) return []; const P = new Set(); for (const st of b.strokes) if (st.rec === r.id) { const sb = strokeBox(st); P.add(NB.pageAt(b, (sb[0] + sb[2]) / 2, (sb[1] + sb[3]) / 2)); }
+    const L = [...P].sort((a, z) => a - z).slice(0, max), out = []; for (const i of L) out.push(await toBlob(nbRender(b, pageRect(b, i), 1.3), 'image/jpeg', .8)); return out; },
+  async summary(b, r) { const sample = await Cap.get('sample'); if (!sample) return aiUnavailable(); const c = b.course && Courses.get(b.course);
+    if (LTx.can() && !LTx.done(r)) { Island.toast({ icon: 'spark', c: 'var(--purple)', t: 'Prima trascrivo la lezione…', s: 'Ci vuole circa un minuto ogni 10 di audio', ms: 4000 }); if (!await this.transcribe(b, r, true)) return; }
+    Island.toast({ icon: 'spark', c: 'var(--purple)', t: 'Scrivo il riassunto…', ms: 6000 });
+    const tx = LTx.plain(r), imgs = await this.shots(b, r);
+    const ask = `Sei un tutor universitario di ingegneria. Ti do ${tx ? 'la trascrizione con i tempi di una lezione' : 'gli appunti scritti a mano di una lezione'}${tx && imgs.length ? ' e le foto delle pagine di appunti che lo studente ha scritto durante la lezione' : imgs.length ? ' (nelle foto)' : ''}. Corso: ${c ? c.name : b.title}.
+Scrivi in italiano. Rispondi SOLO con JSON:
+{"title": titolo della lezione (max 8 parole),
+ "summary": [5-10 punti chiave, frasi brevi e precise, formule in testo semplice],
+ "concepts": [{"t": concetto o definizione importante, "s": secondo della trascrizione in cui viene spiegato (numero) o null}],
+ ${tx && imgs.length ? '"missed": [{"t": cosa ha detto il professore di importante che NON compare negli appunti scritti, "s": secondo}],' : '"missed": [],'}
+ "exam": [3-5 possibili domande d'esame su questa lezione],
+ "todo": [{"t": avvisi pratici detti a lezione (esoneri, consegne, cambi d'aula, libri da prendere), "due": "YYYY-MM-DD" se detto, altrimenti null}]}
+Oggi è ${todayK()}.${tx ? `\n\nTRASCRIZIONE:\n${tx}` : ''}`;
+    let o; try { o = await sample.json(ask, { images: imgs, cache: false }); } catch (e) { return aiError(e); } if (!o || !Array.isArray(o.summary)) return aiError({ code: 'invalid_json' });
+    const tm = s => s != null && isFinite(+s) ? ` <a class="ls-t" data-ls="${+s}">${RP.fmt(+s)}</a>` : '';
+    const d = new Date(r.t0), title = `${c ? c.name : b.title} · ${o.title || 'Lezione'} (${d.getDate()} ${MON_S[d.getMonth()]})`;
+    const sec = (h, L, f) => L && L.length ? `<h3>${h}</h3><ul>${L.map(f).join('')}</ul>` : '';
+    const body = sec('In breve', o.summary, x => `<li>${esc(String(x))}</li>`) + sec('Concetti', o.concepts, x => `<li>${esc(String(x.t || x))}${tm(x.s)}</li>`) + sec('Detto a voce e non scritto', o.missed, x => `<li>${esc(String(x.t || x))}${tm(x.s)}</li>`) + sec('Possibili domande d\'esame', o.exam, x => `<li>${esc(String(x))}</li>`) + sec('Avvisi', o.todo, x => `<li>${esc(String(x.t || x))}${x.due ? ' · ' + esc(relDay(x.due)) : ''}</li>`);
+    const nid = uid(), html = body.replace(/ <a class="ls-t" data-ls="([\d.]+)">([^<]+)<\/a>/g, ' ($2)'); S.notes[nid] = { id: nid, title, html, text: htmlToText(html), course: b.course || null, src: { board: b.id, rec: r.id }, updated: Date.now(), created: Date.now() }; save('note-' + nid); r.note = nid; Board.b === b ? Board.persist() : save('board-' + b.id);
+    Game.add(10, 'Riassunto della lezione', { icon: 'spark' }); const todo = (o.todo || []).filter(x => x && (x.t || typeof x === 'string'));
+    const sh = openSheet({ title: '✨ ' + (o.title || 'Riassunto'), wide: true, left: { label: 'Chiudi' }, right: { label: 'Apri nota', act: s => { s.close(); UI.note = nid; go('notes'); } }, body: `<div class="ls-sum">${body}</div>${todo.length ? `<button class="btn primary" id="lsTodo">${ico('check', 'sm')}Aggiungi ${todo.length === 1 ? 'l\'avviso' : `i ${todo.length} avvisi`} ai promemoria</button>` : ''}<p class="muted" style="margin:0;font-size:13px">Salvato nelle note${c ? ' del corso' : ''}. Tocca un orario per sentire quel momento.</p>`,
+      onMount: el => { $$('[data-ls]', el).forEach(a => a.onclick = () => { sh.close(); openMoment(b, r, +a.dataset.ls); }); const t = $('#lsTodo', el); if (t) t.onclick = () => { for (const x of todo) S.tasks.push({ id: uid(), title: String(x.t || x).slice(0, 140), due: /^\d{4}-\d{2}-\d{2}$/.test(x.due || '') ? x.due : null, time: null, prio: 1, cat: 'uni', course: b.course || null, project: null, notes: `Dalla lezione: ${title}`, alert: '', done: false, created: Date.now() }); save('tasks'); t.disabled = true; t.textContent = '✓ Aggiunti'; Island.toast({ icon: 'check', c: 'var(--green)', t: 'Promemoria aggiunti', ms: 2000 }); }; } }); },
+  /* the start sheet */
+  sheet() { const T = this.today(), now = T.find(o => o.now), P = this.P(), C = S.courses.slice().sort((a, b) => a.name.localeCompare(b.name));
+    if (!C.length) { Island.toast({ icon: 'grad', c: 'var(--orange)', t: 'Aggiungi prima un corso', s: 'Studio → Corsi, o importa l\'orario', ms: 3000 }); return; }
+    let pick = now ? now.c.id : (T.find(o => !o.past) || {}).c?.id || C[0].id;
+    const sh = openSheet({ title: '🎓 Inizia lezione', left: { label: 'Annulla' }, right: { label: 'Inizia', act: s => { const c = Courses.get(pick); if (!c) return; S.profile.lesson = { rec: $('#lsR', s.el).getAttribute('aria-pressed') === 'true', tx: $('#lsX', s.el).getAttribute('aria-pressed') === 'true', quiet: $('#lsQ', s.el).getAttribute('aria-pressed') === 'true' }; save('profile'); s.close(); const o = T.find(z => z.c.id === c.id && !z.past) || null; this.start(c, o); } },
+      body: `${now ? `<div class="dt-hero" style="--c:${now.c.color || 'var(--accent)'}"><b>${esc(now.c.name)}</b><span class="muted">Adesso · ${m2hm(now.s)}–${m2hm(now.e)}${now.x.loc ? ' · ' + esc(now.x.loc) : ''}</span></div>` : `<p class="muted" style="margin:0">${T.length ? 'Nessuna lezione in questo momento: scegli il corso.' : 'Oggi non hai lezioni in calendario: scegli il corso.'}</p>`}
+        <div class="chips" id="lsC" style="flex-wrap:wrap">${C.map(c => `<button class="chip" data-lsc="${c.id}" aria-pressed="${c.id === pick}" style="--cc:${c.color || 'var(--accent)'}">${esc(c.name)}${T.some(o => o.c.id === c.id && !o.past) ? ' · ' + m2hm(T.find(o => o.c.id === c.id && !o.past).s) : ''}</button>`).join('')}</div>
+        <div class="list flat"><div class="row"><span class="grow"><div class="t">🎙 Registra l'audio</div><div class="s">Ogni tratto resta legato al momento in cui l'hai scritto</div></span>${toggleBtn('lsR', P.rec)}</div>
+        <div class="row"><span class="grow"><div class="t">📝 Trascrivi mentre registra</div><div class="s">${LTx.can() ? 'In sottofondo, un pezzo ogni 45 secondi: a fine lezione il testo è già pronto' : 'Serve Google Gemini in Impostazioni → IA (puoi trascrivere anche dopo)'}</div></span>${toggleBtn('lsX', P.tx && LTx.can())}</div>
+        <div class="row"><span class="grow"><div class="t">🔕 Metti in pausa gli avvisi di Orbita</div><div class="s">Fino alla fine della lezione: te li ritrovi dopo</div></span>${toggleBtn('lsQ', P.quiet)}</div></div>
+        <p class="muted" style="margin:0;font-size:13px">Apro il quaderno del corso su una pagina nuova con la data. A fine lezione ti propongo il riassunto.</p>`,
+      onMount: el => { $$('[data-lsc]', el).forEach(x => x.onclick = () => { pick = x.dataset.lsc; $$('[data-lsc]', el).forEach(y => y.setAttribute('aria-pressed', y === x)); }); ['lsR', 'lsX', 'lsQ'].forEach(id => wireToggle($('#' + id, el), () => {})); } }); },
+};
+ACT.lessonStart = () => Lesson.cur ? (Board.recOn ? Lesson.end() : (Lesson.cur = null, Lesson.sheet())) : Lesson.sheet();
+ACT.lessonEnd = () => Lesson.end();
+/* a lesson survives a reload of the page (the recording does not: say so) */
+try { const j = JSON.parse(localStorage.getItem('orbita.lesson') || 'null'); if (j && Date.now() < j.endAt + 15 * 60e3) { Lesson.cur = j; Lesson.arm(); } else localStorage.removeItem('orbita.lesson'); } catch (_) {}
+/* recording hooks: live transcription follows the mic; when it stops, the lesson ends */
+{ const oRec = ACT.nbRec; ACT.nbRec = async (...a) => { const was = Board.recOn, wasId = was && was.id; if (was) LTx.stopLive(); const r = await oRec(...a);
+    if (!was && Board.recOn && !LTx.live && LTx.can() && Lesson.wantTx) LTx.startLive(Board.recOn.mr.stream, Board.recOn.id, Board.recOn.t0);
+    if (was) { const L = Lesson.cur || Lesson.ending, isLesson = L && (!L.rec || L.rec === wasId); if (isLesson) { Lesson.cur = null; clearTimeout(Lesson.t1); clearTimeout(Lesson.t2); try { localStorage.removeItem('orbita.lesson'); } catch (_) {} }
+      const t0 = Date.now(), wait = () => { const ok = Object.values(S.boards || {}).some(b => (b.recs || []).some(x => x.id === wasId)); if (ok) { LTx.q.then(() => LTx.attach()); LTx.attach(); if (isLesson) Lesson.after(wasId); return; } if (Date.now() - t0 < 10000) setTimeout(wait, 300); }; wait(); }
+    return r; }; }
+/* Orbita's own alerts wait during the lesson */
+{ const oN = Notify.send; Notify.send = function (...a) { if (Lesson.quiet()) { (Lesson.held ||= []).push(a); return; } return oN.apply(this, a); };
+  setInterval(() => { if (!Lesson.quiet() && Lesson.held && Lesson.held.length) { const H = Lesson.held; Lesson.held = []; const n = H.length; if (n === 1) oN.apply(Notify, H[0]); else oN.call(Notify, `${n} avvisi durante la lezione`, H.map(h => h[0]).slice(0, 4).join(' · ')); } }, 30e3); }
+/* entry points: boards header, Today, ⌘K, the feature list */
+{ const oA = VIEWS.boards.actions; VIEWS.boards.actions = () => `<button class="btn sm ${Lesson.now() ? 'primary' : ''}" data-act="lessonStart" title="Inizia lezione: quaderno del corso, registrazione, trascrizione">🎓<span class="hide-narrow">${Lesson.cur ? 'Fine lezione' : 'Lezione'}</span></button>` + oA(); }
+TODAY_CARDS.lesson = 'Lezione adesso'; if (!TODAY_DEFAULT.includes('lesson')) TODAY_DEFAULT.unshift('lesson');
+TODAY_EXTRA.lesson = () => { if (Lesson.cur && Board.recOn) { const c = Courses.get(Lesson.cur.cid); return `<section class="card span-12 ls-card on"><span class="rec-dot on" style="width:12px;height:12px"></span><span class="grow"><b>Lezione in corso${c ? ' · ' + esc(c.name) : ''}</b><div class="muted">Registro${LTx.live ? ' e trascrivo' : ''} · fino alle ${m2hm(new Date(Lesson.cur.endAt).getHours() * 60 + new Date(Lesson.cur.endAt).getMinutes())}</div></span><button class="btn sm" data-lsopen>Apri</button><button class="btn sm danger" data-act="lessonEnd">Fine</button></section>`; }
+  const o = Lesson.now(); if (!o) return ''; return `<section class="card span-12 ls-card" style="--cc:${o.c.color || 'var(--accent)'}"><span class="tile-ico" style="background:${o.c.color || 'var(--accent)'};width:40px;height:40px">🎓</span><span class="grow"><b>${esc(o.c.name)}</b><div class="muted">${m2hm(o.s)}–${m2hm(o.e)}${o.x.loc ? ' · ' + esc(o.x.loc) : ''} · quaderno, registrazione e trascrizione con un tocco</div></span><button class="btn primary" data-act="lessonStart">Inizia lezione</button></section>`; };
+document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('[data-lsopen]'); if (b && Lesson.cur) { e.stopPropagation(); Board.unmount(); UI.board = Lesson.cur.bid; go('boards'); } });
+CMD_SRC.push(q => { const out = []; if (/lezion|inizia|registra/i.test(q)) out.push({ sec: 'Azioni', t: Lesson.cur ? 'Fine lezione' : 'Inizia lezione', s: 'Quaderno del corso, registrazione, trascrizione', i: 'grad', fn: () => ACT.lessonStart() });
+  if (q.length >= 3) for (const h of LTx.hits(q, 6)) out.push({ sec: 'Detto a lezione', t: `${h.b.title} · ${RP.fmt(h.s)}`, s: '🎧 ' + h.t, i: 'mic', fn: () => openMoment(h.b, h.r, h.s) }); return out; });
+/* the notebook search finds what was said too */
+{ const oS = ACT.nbSearch; ACT.nbSearch = (...a) => { oS(...a); const sh = Sheets[Sheets.length - 1], q = sh && $('#nsQ', sh.el); if (!q) return; const host = document.createElement('div'); $('#nsR', sh.el).after(host);
+    q.addEventListener('input', () => { const t = q.value.trim(), H = t.length >= 2 ? LTx.hits(t, 20) : []; host.innerHTML = H.length ? `<div class="section-h" style="margin:4px 0">🎧 Detto a lezione</div><div class="list">${H.map((h, j) => { const pg = LTx.pageAt(h.b, h.r, h.s); return `<button class="row" data-ltx="${j}"><span class="tile-ico" style="background:var(--pink)">${HEADPH}</span><span class="grow" style="text-align:left;min-width:0"><div class="t">${esc(h.b.title)} · ${RP.fmt(h.s)}${pg != null ? ' · pagina ' + (pg + 1) : ''}</div><div class="s">${markHits(h.t, t)}</div></span></button>`; }).join('')}</div>` : '';
+      $$('[data-ltx]', host).forEach(x => x.onclick = () => { sh.close(); const h = H[+x.dataset.ltx]; openMoment(h.b, h.r, h.s); }); }); }; }
+/* ⋯ menu of a notebook: the lesson tools */
+{ const oMore = ACT.bMore; ACT.bMore = (...a) => { oMore(...a); const sh = Sheets[Sheets.length - 1], host = sh && $$('.list', sh.el).find(l => !l.classList.contains('flat')); const b = Board.b; if (!host || !b) return; const R = b.recs || [], last = R[R.length - 1];
+    host.insertAdjacentHTML('afterbegin', `${last ? `<button class="row" id="lsSumM"><span class="tile-ico" style="background:var(--purple)">${ico('spark')}</span><span class="grow"><div class="t">Riassunto dell'ultima lezione</div><div class="s">Audio + appunti: cosa hai perso, domande d'esame, avvisi</div></span></button>
+      <button class="row" id="lsTxM"><span class="tile-ico" style="background:var(--pink)">📝</span><span class="grow"><div class="t">Trascrizione e ricerca nell'audio</div><div class="s">${LTx.done(last) ? (last.tx || []).length + ' frasi' : LTx.pct(last) ? 'Trascritto ' + Math.round(LTx.pct(last) * 100) + '%' : 'Non ancora trascritta'}</div></span></button>` : ''}`);
+    const s1 = $('#lsSumM', sh.el); if (s1) s1.onclick = () => { sh.close(); Lesson.summary(b, last); }; const s2 = $('#lsTxM', sh.el); if (s2) s2.onclick = async () => { sh.close(); await RP.open(last); RP.txOn = true; RP.txPaint(); RP.paint(); }; }; }
+if (typeof FEAT !== 'undefined') FEAT.unshift(['Studio', '🎓', 'Inizia lezione', 'Quaderno del corso su una pagina nuova, registrazione, trascrizione e riassunto con quello che non hai scritto', () => ACT.lessonStart()], ['Studio', '📄', 'Slide accanto al quaderno', 'Il PDF delle slide a sinistra: ritagli un grafico e finisce nella pagina', () => { go('boards'); setTimeout(() => ACT.nbSlides(), 300); }]);
+
+/* =========================================================================
+   z3_slides — the course slides next to the notebook
+   On the left (on the phone: on top) the PDF of the slides, on the right
+   the notebook. ✂︎ cut a piece of a slide (a graph, a table) and it lands
+   in the page, already selected so you can move it; ＋ puts a whole slide.
+   The pane remembers which PDF and where you were, per notebook.
+   ========================================================================= */
+const BS = { on: false, pdf: null, doc: null, bid: null, scale: 1, crop: false, io: null, cache: new Map(), w: 42,
+  narrow() { return innerWidth <= 640; },
+  pdfs(b) { const L = (S.docs || []).filter(d => d.ext === 'pdf'); const mine = d => (b && b.course && (d.subject === b.course || d.course === b.course)) ? 0 : 1; return L.sort((x, y) => mine(x) - mine(y) || (y.added || 0) - (x.added || 0)); },
+  async open(d) { const b = Board.b; if (!b) return; if (!d) return this.pick(); Island.toast({ icon: 'pages', t: 'Apro le slide…', s: d.name, ms: 1400 });
+    let lib, pdf; try { lib = await ensurePdfJs(); const bl = await docBlob(d); if (!bl) throw 0; pdf = await lib.getDocument({ data: new Uint8Array(await bl.arrayBuffer()) }).promise; } catch (_) { Island.toast({ icon: 'pages', c: 'var(--orange)', t: 'Non riesco ad aprire il PDF', s: 'Il file è su un altro dispositivo o non è leggibile', ms: 3000 }); return; }
+    if (this.pdf && this.pdf !== pdf) try { this.pdf.destroy(); } catch (_) {} this.pdf = pdf; this.doc = d; this.bid = b.id; this.cache.clear(); this.on = true;
+    b.slides = { doc: d.id, page: (b.slides && b.slides.doc === d.id && b.slides.page) || 1, w: (b.slides && b.slides.w) || this.w }; this.w = b.slides.w; Board.persist(); this.mount(true); },
+  close() { this.on = false; const b = Board.b; if (b && b.slides) { b.slides.off = true; Board.persist(); } this.unmount(); },
+  unmount() { const w = $('#boardWrap'), p = $('#bsPane'); if (p) p.remove(); if (this.io) { this.io.disconnect(); this.io = null; } if (w && w.classList.contains('bs-on')) { w.classList.remove('bs-on'); requestAnimationFrame(() => { Board.resize(); try { Board.fit(); } catch (_) {} }); } },
+  /* (re)build the pane inside the board: after every redraw of the page too */
+  mount(scrollTo) { const w = $('#boardWrap'), b = Board.b; if (!w || !b || !this.on || this.bid !== b.id || !this.pdf) { this.unmount(); return; }
+    let p = $('#bsPane'); if (!p) { w.insertAdjacentHTML('afterbegin', `<div class="bs-pane" id="bsPane"><div class="bs-h"><button class="bs-doc" data-bsa="pick" title="Cambia PDF">📄 <span>${esc(this.doc.name.replace(/\.pdf$/i, ''))}</span> ▾</button><button class="icon-btn" data-bsa="crop" aria-pressed="${this.crop}" title="Ritaglia un pezzo di slide e mettilo nella pagina" aria-label="Ritaglia">✂︎</button><button class="icon-btn" data-bsa="zo" aria-label="Rimpicciolisci">−</button><button class="icon-btn" data-bsa="zi" aria-label="Ingrandisci">+</button><button class="icon-btn" data-bsa="x" aria-label="Chiudi le slide">${ico('x')}</button></div><div class="bs-pages" id="bsPages"></div><div class="bs-grip" id="bsGrip" title="Trascina per allargare"></div></div>`); p = $('#bsPane'); this.wire(p); this.pages(); }
+    w.classList.add('bs-on'); w.style.setProperty('--bsw', this.w + '%'); w.classList.toggle('bs-crop', this.crop); requestAnimationFrame(() => { Board.resize(); if (scrollTo) { try { Board.fit(); } catch (_) {} this.goTo(b.slides.page || 1, false); } }); },
+  wire(p) { $$('[data-bsa]', p).forEach(x => x.onclick = e => { e.stopPropagation(); const k = x.dataset.bsa;
+      if (k === 'x') this.close(); else if (k === 'pick') this.pick(); else if (k === 'zi' || k === 'zo') { const cur = this.curPage(); this.scale = clamp(this.scale * (k === 'zi' ? 1.25 : .8), .6, 3); this.cache.clear(); this.pages(); this.goTo(cur, false); }
+      else if (k === 'crop') { this.crop = !this.crop; x.setAttribute('aria-pressed', this.crop); $('#boardWrap').classList.toggle('bs-crop', this.crop); if (this.crop) Island.toast({ icon: 'image', t: 'Ritaglia', s: 'Trascina un rettangolo su una slide: finisce nella pagina', ms: 2400 }); } });
+    const L = $('#bsPages', p); L.addEventListener('scroll', () => { clearTimeout(this.st); this.st = setTimeout(() => { const b = Board.b; if (b && b.slides) { b.slides.page = this.curPage(); Board.persist(); } }, 600); }, { passive: true });
+    /* drag the edge to make the pane wider or narrower */
+    const g = $('#bsGrip', p); g.onpointerdown = e => { e.preventDefault(); try { g.setPointerCapture(e.pointerId); } catch (_) {} const w = $('#boardWrap'), r = w.getBoundingClientRect(), nar = this.narrow();
+      const mv = ev => { this.w = clamp(nar ? (ev.clientY - r.top) / r.height * 100 : (ev.clientX - r.left) / r.width * 100, 22, 70); w.style.setProperty('--bsw', this.w + '%'); };
+      const up = () => { g.removeEventListener('pointermove', mv); g.removeEventListener('pointerup', up); const b = Board.b; if (b && b.slides) { b.slides.w = Math.round(this.w); Board.persist(); } this.cache.clear(); const c = this.curPage(); this.pages(); this.goTo(c, false); Board.resize(); };
+      g.addEventListener('pointermove', mv); g.addEventListener('pointerup', up); }; },
+  /* page boxes sized at once, drawn when they scroll into view */
+  async pages() { const L = $('#bsPages'); if (!L || !this.pdf) return; const N = this.pdf.numPages, first = await this.pdf.getPage(1), v1 = first.getViewport({ scale: 1 }), W = Math.max(120, L.clientWidth - 16) * this.scale, ar = v1.height / v1.width;
+    L.innerHTML = Array.from({ length: N }, (_, i) => `<div class="bs-pg" data-bp="${i + 1}" style="width:${W}px;height:${Math.round(W * ar)}px"><span class="bs-n">${i + 1}</span><button class="bs-add" data-bsadd="${i + 1}" title="Metti tutta la slide nella pagina" aria-label="Metti la slide ${i + 1} nella pagina">＋</button></div>`).join('');
+    if (this.io) this.io.disconnect(); this.io = new IntersectionObserver(E => E.forEach(en => { if (en.isIntersecting) this.draw(+en.target.dataset.bp); }), { root: L, rootMargin: '400px 0px' }); $$('.bs-pg', L).forEach(x => this.io.observe(x));
+    $$('[data-bsadd]', L).forEach(x => x.onclick = e => { e.stopPropagation(); this.put(+x.dataset.bsadd); });
+    $$('.bs-pg', L).forEach(x => this.cropOn(x)); },
+  async draw(n) { const L = $('#bsPages'), box = L && $(`[data-bp="${n}"]`, L); if (!box || box.querySelector('canvas')) return; const pg = await this.pdf.getPage(n), W = box.clientWidth, v = pg.getViewport({ scale: 1 }), s = W / v.width, dpr = Math.min(2.5, devicePixelRatio || 1), vp = pg.getViewport({ scale: s * dpr });
+    const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height); box.prepend(c); try { await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise; } catch (_) {} },
+  curPage() { const L = $('#bsPages'); if (!L) return 1; const y = L.scrollTop + L.clientHeight * .3; let n = 1; for (const x of $$('.bs-pg', L)) { if (x.offsetTop - L.offsetTop <= y) n = +x.dataset.bp; else break; } return n; },
+  goTo(n, smooth = true) { const L = $('#bsPages'), x = L && $(`[data-bp="${n}"]`, L); if (x) L.scrollTo({ top: x.offsetTop - L.offsetTop - 6, behavior: smooth ? 'smooth' : 'auto' }); },
+  /* a sharp image of (a piece of) a slide */
+  async shot(n, fr) { const pg = await this.pdf.getPage(n), v = pg.getViewport({ scale: 1 }), s = Math.min(3, 1600 / v.width), vp = pg.getViewport({ scale: s }), c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height); await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    if (!fr) return c; const o = document.createElement('canvas'), x = fr.x * c.width, y = fr.y * c.height, w = Math.max(4, fr.w * c.width), h = Math.max(4, fr.h * c.height); o.width = Math.round(w); o.height = Math.round(h); o.getContext('2d').drawImage(c, x, y, w, h, 0, 0, w, h); return o; },
+  async put(n, fr) { const c = await this.shot(n, fr), bl = await toBlob(c, 'image/jpeg', .88); await nbAddImage(new File([bl], `slide-${n}.jpg`, { type: 'image/jpeg' })); Island.toast({ icon: 'image', c: 'var(--green)', t: fr ? 'Ritaglio nella pagina' : `Slide ${n} nella pagina`, s: 'Spostala o ridimensionala col lazo', ms: 1800 }); },
+  cropOn(box) { box.addEventListener('pointerdown', e => { if (!this.crop || e.target.closest('.bs-add')) return; e.preventDefault(); const r = box.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top, band = document.createElement('div'); band.className = 'bs-band'; box.appendChild(band); try { box.setPointerCapture(e.pointerId); } catch (_) {}
+      let fr = null; const mv = ev => { const x1 = clamp(ev.clientX - r.left, 0, r.width), y1 = clamp(ev.clientY - r.top, 0, r.height), L = Math.min(x0, x1), T = Math.min(y0, y1), W = Math.abs(x1 - x0), H = Math.abs(y1 - y0); Object.assign(band.style, { left: L + 'px', top: T + 'px', width: W + 'px', height: H + 'px' }); fr = { x: L / r.width, y: T / r.height, w: W / r.width, h: H / r.height }; };
+      const up = () => { box.removeEventListener('pointermove', mv); box.removeEventListener('pointerup', up); box.removeEventListener('pointercancel', up); setTimeout(() => band.remove(), 250); if (fr && fr.w > .03 && fr.h > .02) this.put(+box.dataset.bp, fr); };
+      box.addEventListener('pointermove', mv); box.addEventListener('pointerup', up); box.addEventListener('pointercancel', up); }); },
+  pick() { const b = Board.b, L = this.pdfs(b); const sh = openSheet({ title: '📄 Slide accanto al quaderno', left: { label: 'Annulla' }, body: `<p class="muted" style="margin:0;font-size:14px">A sinistra le slide, a destra il quaderno: ✂︎ ritagli un grafico e lo trovi nella pagina.</p>
+      <button class="btn primary" id="bsUp">${ico('upload', 'sm')}Carica un PDF</button>${L.length ? `<div class="list">${L.slice(0, 40).map((d, i) => `<button class="row" data-bsd="${i}"><span class="tile-ico" style="background:var(--red)">${ico('pages')}</span><span class="grow" style="min-width:0"><div class="t">${esc(d.name)}</div><div class="s">${b && b.course && (d.subject === b.course || d.course === b.course) ? 'Del corso · ' : ''}${relDay(dkey(new Date(d.added || Date.now())))}</div></span></button>`).join('')}</div>` : '<p class="muted">Nessun PDF nei documenti.</p>'}`,
+      onMount: el => { $$('[data-bsd]', el).forEach(x => x.onclick = () => { sh.close(); this.open(L[+x.dataset.bsd]); });
+        $('#bsUp', el).onclick = () => { const i = document.createElement('input'); i.type = 'file'; i.accept = 'application/pdf,.pdf'; i.onchange = async () => { const f = i.files[0]; if (!f) return; const before = new Set(S.docs.map(d => d.id)), old = UI.docFilter; if (b && b.course) UI.docFilter = b.course; try { await Docs.upload([f]); } catch (_) {} UI.docFilter = old; const d = S.docs.find(x => !before.has(x.id)); sh.close(); if (d) this.open(d); }; i.click(); }; } }); },
+};
+ACT.nbSlides = () => BS.on && BS.bid === (Board.b && Board.b.id) ? BS.close() : (() => { const b = Board.b, d = b && b.slides && S.docs.find(x => x.id === b.slides.doc); d && !b.slides.off ? BS.open(d) : (d ? (b.slides.off = false, BS.open(d)) : BS.pick()); })();
+/* the button in the notebook bar, and keeping the pane through redraws */
+{ const oM = VIEWS.boards.mount; VIEWS.boards.mount = function (root) { oM.call(this, root); const b = Board.b;
+    const top = $('#boardWrap [data-act=nbPages]'), at = top ? top.closest('.glass') : null; if (b && NB.is(b) && at && !$('#boardWrap [data-act=nbSlides]')) at.insertAdjacentHTML('beforebegin', `<div class="glass"><button class="icon-btn" data-act="nbSlides" aria-label="Slide accanto" title="Slide del corso accanto al quaderno">📄</button></div>`);
+    if (BS.on && BS.bid === (b && b.id)) BS.mount(); else if (b && b.slides && !b.slides.off && !BS.on && innerWidth > 900) { const d = S.docs.find(x => x.id === b.slides.doc); if (d) BS.open(d); } else BS.unmount(); }; }
+{ const oG = go; go = function (v, ...a) { if (v !== 'boards' && BS.on) { BS.on = false; BS.unmount(); } return oG.call(this, v, ...a); }; }
+window.addEventListener('resize', () => { if (BS.on) { clearTimeout(BS.rt); BS.rt = setTimeout(() => { const c = BS.curPage(); BS.pages(); BS.goTo(c, false); Board.resize(); }, 250); } });
+
+/* =========================================================================
+   z4_inkcards — what you write becomes study material
+   • a formula written by hand → lasso → ∑ → clean LaTeX: in the course
+     formula sheet, searchable with ⌘K, or rewritten neatly in the page
+   • what you highlight or cover with tape → flashcards with the picture of
+     your own notes: question = the page with the part hidden, answer = the
+     part revealed; they join the spaced-repetition review like the others
+   ========================================================================= */
+/* ---------------- handwriting → LaTeX ---------------- */
+{ const oMenu = Board.menu; Board.menu = function (...a) { const r = oMenu.apply(this, a); const M = this.cv && $('#nbSel', this.cv.parentNode), m = M && $('[data-sa=math]', M);
+    if (m && !$('[data-sa=tex]', M)) { m.insertAdjacentHTML('afterend', '<button data-sa="tex" title="Formula scritta a mano → LaTeX, nel formulario">∑ Formula</button><button data-sa="card" title="Flashcard da questa parte">🃏 Flashcard</button>'); $$('[data-sa=tex],[data-sa=card]', M).forEach(x => x.onclick = e => { e.stopPropagation(); selAct(x.dataset.sa); }); this.placeMenu(); }
+    return r; }; }
+{ const oSA = selAct; selAct = async function (a, ...r) { if (a === 'tex') return inkTex(); if (a === 'card') return InkCards.fromSel(); return oSA(a, ...r); }; }
+async function inkTex() { const B = Board, b = B.b, sel = (B.sel || []).filter(s => s.t !== 'img'); if (!sel.length) return; const sample = await Cap.get('sample'); if (!sample) return aiUnavailable();
+  const bb = bbox(sel), pad = 14, R = { x: bb.x - pad, y: bb.y - pad, w: bb.w + pad * 2, h: bb.h + pad * 2 }, im = await toBlob(nbRender(b, R, 2.6, { strokes: sel, page: false, bg: '#FFFFFF' }));
+  Island.toast({ icon: 'spark', c: 'var(--purple)', t: 'Leggo la formula…', ms: 3000 });
+  let f; try { f = await sample.json('Nell\'immagine c\'è una formula (o poche righe di formule) scritta a mano da uno studente di ingegneria. Trascrivila in LaTeX corretto, correggendo solo segni evidentemente sbagliati per la grafia. Rispondi solo con JSON {"tex": LaTeX senza $ (più righe con \\\\), "txt": versione leggibile con simboli unicode (σ, ∫, ², ·), "name": nome breve della formula in italiano (es. "Tensione normale da flessione") o "" se non lo sai, "topic": argomento breve, "vars": significato dei simboli e unità in una riga, "" se non deducibili}.', { images: [im], cache: false }); } catch (e) { return aiError(e); }
+  if (!f || !(f.tex || f.txt)) return Island.toast({ icon: 'x', c: 'var(--orange)', t: 'Non riesco a leggere la formula', ms: 2200 });
+  await Formula.tex(); const C = S.courses.slice().sort((x, y) => x.name.localeCompare(y.name)); let cid = b.course || (C.find(c => b.title.toLowerCase().includes(c.name.toLowerCase())) || {}).id || (C[0] || {}).id || '';
+  const sh = openSheet({ title: '∑ Formula', wide: true, left: { label: 'Chiudi' }, right: C.length ? { label: 'Nel formulario', act: s => { const c = Courses.get($('#ixC', s.el).value); if (!c) return; const F = { id: uid(), topic: $('#ixTp', s.el).value.trim() || 'Dal quaderno', name: $('#ixN', s.el).value.trim(), tex: $('#ixT', s.el).value.trim(), txt: String(f.txt || ''), vars: $('#ixV', s.el).value.trim(), from: { board: b.id } };
+      c.formulas = Formula.dedup([...(c.formulas || []), F]); save('courses'); if (!b.course) { b.course = c.id; B.persist(); } s.close(); Game.add(4, 'Formula nel formulario', { icon: 'spark' }); Island.toast({ icon: 'check', c: 'var(--green)', t: 'Aggiunta al formulario', s: c.name, ms: 2400, action: { label: 'Apri', fn: () => formulaSheet(c.id) } }); } } : null,
+    body: `<div class="ix-prev" id="ixP"></div>
+      <div class="field"><label for="ixT">LaTeX</label><textarea class="input" id="ixT" rows="3" style="font-family:var(--f-mono);font-size:14px">${esc(f.tex || '')}</textarea></div>
+      <div class="field"><label for="ixN">Nome</label><input class="input" id="ixN" value="${esc(f.name || '')}" placeholder="Es. Tensione normale da flessione"></div>
+      <div class="field"><label for="ixV">Simboli e unità</label><input class="input" id="ixV" value="${esc(f.vars || '')}" placeholder="σ tensione [MPa], M momento [N·mm]…"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div class="field"><label for="ixTp">Argomento</label><input class="input" id="ixTp" value="${esc(f.topic || '')}"></div>${C.length ? `<div class="field"><label for="ixC">Corso</label><select class="input" id="ixC">${C.map(c => `<option value="${c.id}" ${c.id === cid ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>` : ''}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="ixNeat">✍️ Riscrivi in bella nella pagina</button><button class="btn" id="ixCp">${ico('copy', 'sm')}Copia LaTeX</button></div>${C.length ? '' : '<p class="muted" style="margin:0">Aggiungi un corso per avere il formulario.</p>'}`,
+    onMount(el) { const T = $('#ixT', el), P = $('#ixP', el), paint = () => { P.innerHTML = Formula.html({ tex: T.value, txt: f.txt }, true); }; paint(); T.oninput = paint; $('#ixCp', el).onclick = () => copyText(T.value);
+      $('#ixNeat', el).onclick = () => { const before = b.strokes.slice(), set = new Set(sel), txt = String(f.txt || T.value); b.strokes = b.strokes.filter(x => !set.has(x)); const n = { t: 'txt', al: 'l', c: sel[0].c || 'ink', w: clamp(Math.round(bb.h * .55), 14, 44), s: txt, p: [r1(bb.x), r1(bb.y), .5], tex: T.value }; b.strokes.push(n); B.sel = [n]; B.hist2(before); B.draw(); B.menu(); Island.toast({ icon: 'check', t: 'Riscritta', s: 'Annulla con ↶ se preferivi la tua', ms: 1800 }); }; } }); }
+/* ⌘K finds the formulas of every course */
+CMD_SRC.push(q => { if (q.length < 3) return []; const n = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''), Q = n(q), out = [];
+  for (const c of S.courses) for (const f of c.formulas || []) if (!f.off && (n(f.name).includes(Q) || n(f.topic).includes(Q) || n(f.txt).includes(Q) || n(f.vars).includes(Q))) { out.push({ sec: 'Formule', t: f.name || f.txt || f.tex, s: `${c.name}${f.txt ? ' · ' + f.txt : ''}`, i: 'spark', fn: () => formulaSheet(c.id) }); if (out.length >= 5) return out; }
+  return out; });
+/* ---------------- highlights & tape → flashcards ---------------- */
+const InkCards = {
+  marks(b) { return b.strokes.filter(s => (s.t === 'hl' && !s.ball) || s.t === 'tape'); },
+  /* close marks on the same page become one card */
+  groups(b, list) { const G = []; for (const st of list || this.marks(b)) { const sb = strokeBox(st), pg = NB.is(b) ? NB.pageAt(b, (sb[0] + sb[2]) / 2, (sb[1] + sb[3]) / 2) : 0, box = [sb[0], sb[1], sb[2], sb[3]];
+      let g = G.find(g => g.pg === pg && g.kind === (st.t === 'tape' ? 'tape' : 'hl') && box[0] < g.box[2] + 40 && box[2] > g.box[0] - 40 && box[1] < g.box[3] + 14 && box[3] > g.box[1] - 14);
+      if (g) { g.L.push(st); g.box = [Math.min(g.box[0], box[0]), Math.min(g.box[1], box[1]), Math.max(g.box[2], box[2]), Math.max(g.box[3], box[3])]; } else G.push({ pg, kind: st.t === 'tape' ? 'tape' : 'hl', L: [st], box }); }
+    return G; },
+  key(g) { let h = 7; for (const st of g.L) { const p = st.p || []; h = (h * 31 + Math.round((p[0] || 0) * 3 + (p[1] || 0) * 7 + p.length)) >>> 0; } return g.kind + h.toString(36); },
+  /* the region around the mark: the line, a bit above and below */
+  area(b, g) { const [x0, y0, x1, y1] = g.box; let R = { x: x0 - 260, y: y0 - 80, w: (x1 - x0) + 520, h: (y1 - y0) + 160 }; if (NB.is(b)) { const P = NB.rects(b)[g.pg]; const L = Math.max(P.x + 8, R.x), T = Math.max(P.y + 8, R.y), Rr = Math.min(P.x + P.w - 8, R.x + R.w), Bb = Math.min(P.y + P.h - 8, R.y + R.h); R = { x: L, y: T, w: Math.max(40, Rr - L), h: Math.max(40, Bb - T) }; } return R; },
+  async img(c) { const s = Math.min(1, 720 / c.width), o = document.createElement('canvas'); o.width = Math.round(c.width * s); o.height = Math.round(c.height * s); o.getContext('2d').drawImage(c, 0, 0, o.width, o.height); return o.toDataURL('image/jpeg', .74); },
+  async render(b, g) { const R = this.area(b, g), sc = 2, set = new Set(g.L);
+    /* question: tape closed / highlight covered */
+    const qs = b.strokes.map(st => set.has(st) && st.t === 'tape' ? { ...st, h: false } : st), q = nbRender(b, R, sc, { strokes: qs });
+    if (g.kind === 'hl') { const x = q.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); for (const st of g.L) { const sb = strokeBox(st), X = (sb[0] - R.x - 4) * sc, Y = (sb[1] - R.y - 3) * sc, W = (sb[2] - sb[0] + 8) * sc, H = (sb[3] - sb[1] + 6) * sc; x.fillStyle = '#FF2D55'; x.globalAlpha = .92; x.beginPath(); x.roundRect ? x.roundRect(X, Y, W, H, 10) : x.rect(X, Y, W, H); x.fill(); x.globalAlpha = 1; x.fillStyle = '#fff'; x.font = `700 ${Math.min(H * .6, 34)}px -apple-system,system-ui,sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('?', X + W / 2, Y + H / 2); } }
+    /* answer: tape lifted, highlight outlined */
+    const as = b.strokes.filter(st => !(set.has(st) && st.t === 'tape')), a = nbRender(b, R, sc, { strokes: as }), ax = a.getContext('2d'); ax.setTransform(1, 0, 0, 1, 0, 0); ax.strokeStyle = '#FF2D55'; ax.lineWidth = 3; const [x0, y0, x1, y1] = g.box; ax.beginPath(); ax.roundRect ? ax.roundRect((x0 - R.x - 6) * sc, (y0 - R.y - 5) * sc, (x1 - x0 + 12) * sc, (y1 - y0 + 10) * sc, 12) : ax.rect((x0 - R.x - 6) * sc, (y0 - R.y - 5) * sc, (x1 - x0 + 12) * sc, (y1 - y0 + 10) * sc); ax.stroke();
+    return { qi: await this.img(q), ai: await this.img(a) }; },
+  note(b) { let n = Object.values(S.notes).find(x => x.src && x.src.cardsOf === b.id); if (n) return n; const id = uid(); n = S.notes[id] = { id, title: `${b.title} · flashcard`, html: `<p>Flashcard create da quello che hai evidenziato o coperto col nastro nel quaderno «${esc(b.title)}». Si aggiornano da sole quando le rigeneri.</p>`, text: '', course: b.course || null, src: { cardsOf: b.id }, cards: [], updated: Date.now(), created: Date.now() }; n.text = htmlToText(n.html); return n; },
+  async make(b, groups) { if (!groups.length) { Island.toast({ icon: 'cards', c: 'var(--orange)', t: 'Niente di evidenziato', s: 'Usa l\'evidenziatore o il nastro sulle parti da ricordare', ms: 3000 }); return null; }
+    Island.toast({ icon: 'cards', c: 'var(--purple)', t: `Preparo ${groups.length} flashcard…`, ms: 1600 }); const n = this.note(b), cards = n.cards || (n.cards = []); let add = 0, upd = 0;
+    for (const g of groups) { const k = this.key(g), im = await this.render(b, g), pageN = NB.is(b) ? g.pg + 1 : null, q = g.kind === 'tape' ? `Cosa c'è sotto il nastro?${pageN ? ' · pagina ' + pageN : ''}` : `Cosa c'è al posto del «?»${pageN ? ' · pagina ' + pageN : ''}`;
+      const old = cards.find(c => c.src === k); if (old) { Object.assign(old, im); upd++; } else { cards.push({ q: q + ' · #' + (cards.length + 1), a: 'Guarda la parte evidenziata nell\'immagine', ...im, src: k, board: b.id, page: NB.is(b) ? b.pages[g.pg].id : null }); add++; } }
+    n.updated = Date.now(); save('note-' + n.id); if (add) Game.add(Math.min(20, add * 2), 'Flashcard dal quaderno', { icon: 'cards' });
+    Island.toast({ icon: 'cards', c: 'var(--green)', t: add ? `${add} flashcard nuove` : 'Flashcard aggiornate', s: `${cards.length} in tutto per questo quaderno${upd && add ? ` · ${upd} aggiornate` : ''}`, ms: 3600, action: { label: 'Ripassa', fn: () => Srs.session(n.id) } }); return n; },
+  all() { const b = Board.b; return b && this.make(b, this.groups(b)); },
+  fromSel() { const b = Board.b, sel = Board.sel || []; if (!b || !sel.length) return; const marks = sel.filter(s => (s.t === 'hl' && !s.ball) || s.t === 'tape');
+    if (marks.length) return this.make(b, this.groups(b, marks));
+    /* nothing highlighted in the selection: the whole selection is the hidden part */
+    const bb = bbox(sel), sb = [bb.x, bb.y, bb.x + bb.w, bb.y + bb.h], pg = NB.is(b) ? NB.pageAt(b, bb.x + bb.w / 2, bb.y + bb.h / 2) : 0, fake = { t: 'hl', c: '#FFCC00', w: 1, p: [sb[0], sb[1], .5, sb[2], sb[1], .5, sb[2], sb[3], .5, sb[0], sb[3], .5] };
+    return this.make(b, [{ pg, kind: 'hl', L: [fake], box: sb }]); },
+};
+ACT.nbCards = () => InkCards.all();
+/* the review shows the pictures of your notes */
+{ const oS = Srs.session.bind(Srs); Srs.session = function (...a) { const r = oS(...a); const sh = Sheets[Sheets.length - 1], host = sh && $('#srsHost', sh.el); if (!host) return r;
+    const fix = () => { const fc = $('#fc', host); if (!fc || fc.dataset.ic) return; fc.dataset.ic = 1; const qT = $('.flash-f:not(.back)', fc), aT = $('.flash-f.back', fc), q = qT && qT.textContent.replace(/^Domanda/, ''), all = Srs.all(), x = all.find(z => z.c.q === q && (z.c.qi || z.c.ai)); if (!x) return;
+      if (x.c.qi) qT.insertAdjacentHTML('beforeend', `<img class="fc-img" src="${x.c.qi}" alt="">`); if (x.c.ai) { aT.innerHTML = `<small>Risposta</small><img class="fc-img" src="${x.c.ai}" alt="">`; } fc.classList.add('has-img'); };
+    new MutationObserver(fix).observe(host, { childList: true, subtree: true }); fix(); return r; }; }
+/* ⋯ menu of a notebook */
+{ const oMore = ACT.bMore; ACT.bMore = (...a) => { oMore(...a); const sh = Sheets[Sheets.length - 1], host = sh && $$('.list', sh.el).find(l => !l.classList.contains('flat')); const b = Board.b; if (!host || !b) return; const g = InkCards.groups(b).length, n = Object.values(S.notes).find(x => x.src && x.src.cardsOf === b.id);
+    host.insertAdjacentHTML('afterbegin', `<button class="row" id="icMk"><span class="tile-ico" style="background:var(--orange)">${ico('cards')}</span><span class="grow"><div class="t">Flashcard da evidenziato e nastro</div><div class="s">${g ? `${g} ${g === 1 ? 'parte' : 'parti'} da ricordare` : 'Evidenzia o copri col nastro quello che vuoi ricordare'}${n && (n.cards || []).length ? ` · ${n.cards.length} già create` : ''}</div></span></button>${NB.is(b) ? `<button class="row" id="icSl"><span class="tile-ico" style="background:var(--red)">📄</span><span class="grow"><div class="t">Slide accanto al quaderno</div><div class="s">PDF a sinistra, ritagli un pezzo e finisce nella pagina</div></span></button>` : ''}`);
+    $('#icMk', sh.el).onclick = () => { sh.close(); InkCards.all(); }; const s = $('#icSl', sh.el); if (s) s.onclick = () => { sh.close(); ACT.nbSlides(); }; }; }
+
+/* =========================================================================
+   z5_export — the notebook that plays
+   • "Quaderno che suona": ONE file (.html) that opens in any browser, also
+     offline and without Orbita: the pages, the audio of the lecture, the
+     transcript. Tap a line you wrote and you hear that moment; the pages
+     follow the audio. Perfect to pass to classmates.
+   • the PDF export gets, on every page, the time span of the audio written
+     there, and at the end the transcript of the lecture.
+   ========================================================================= */
+const NBX = {
+  recsOf(b) { return (b.recs || []).filter(r => b.strokes.some(s => s.rec === r.id) || (r.tx || []).length); },
+  span(b, i, r) { const L = NB.strokesOf(b, i).filter(s => s.rec === r.id && s.at != null).map(s => s.at / 1000); return L.length ? [Math.min(...L), Math.max(...L)] : null; },
+  async size(b) { let n = 0; for (const r of this.recsOf(b)) { const d = S.docs.find(x => x.id === r.doc); n += (d && d.size) || 0; } return n; },
+  b64(bl) { return new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(String(f.result)); f.onerror = no; f.readAsDataURL(bl); }); },
+  async build(b, withAudio, onP) { const R = NB.rects(b), recs = this.recsOf(b), pages = [];
+    for (let i = 0; i < b.pages.length; i++) { onP && onP(i / b.pages.length); const P = R[i], c = nbRender(b, P, 1.7), img = c.toDataURL('image/jpeg', .84), hit = [];
+      for (const st of NB.strokesOf(b, i)) { if (st.at == null || !st.rec) continue; const ri = recs.findIndex(r => r.id === st.rec); if (ri < 0) continue; const sb = strokeBox(st);
+        hit.push([ri, Math.round(st.at / 100) / 10, +((sb[0] - P.x) / P.w * 100).toFixed(2), +((sb[1] - P.y) / P.h * 100).toFixed(2), +((sb[2] - sb[0]) / P.w * 100).toFixed(2), +((sb[3] - sb[1]) / P.h * 100).toFixed(2)]); if (hit.length > 900) break; }
+      pages.push({ img, ar: +(P.h / P.w).toFixed(4), hit, title: b.pages[i].title || '' }); await new Promise(z => setTimeout(z, 0)); }
+    const A = []; for (const r of recs) { const d = S.docs.find(x => x.id === r.doc); let src = ''; if (withAudio && d) { try { const bl = await docBlob(d); if (bl) src = await this.b64(bl); } catch (_) {} } A.push({ t0: r.t0, dur: r.dur, src, tx: (r.tx || []).map(x => [x.s, x.t]) }); }
+    const data = { title: b.title, made: new Date().toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }), pages, recs: A };
+    return `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(b.title)} · quaderno che suona</title>
+<style>:root{--a:#0A84FF;--p:#FF2D55;--bg:#F2F2F7;--card:#fff;--t:#1C1C1E;--m:#8E8E93}@media (prefers-color-scheme:dark){:root{--bg:#000;--card:#1C1C1E;--t:#F2F2F7;--m:#98989D}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;background:var(--bg);color:var(--t);padding-bottom:150px}
+header{max-width:900px;margin:0 auto;padding:28px 16px 8px}h1{font-size:30px;margin:0 0 4px;letter-spacing:-.02em}header p{margin:0;color:var(--m);font-size:14px}
+.pg{position:relative;max-width:900px;margin:18px auto;background:#fff;border-radius:14px;box-shadow:0 2px 14px rgba(0,0,0,.08);overflow:hidden;transition:box-shadow .3s}.pg.cur{box-shadow:0 0 0 3px var(--a),0 6px 24px rgba(0,0,0,.12)}
+.pg img{display:block;width:100%;height:auto}.pg .h{position:absolute;cursor:pointer;border-radius:6px}.pg .h:hover{background:rgba(255,45,85,.12)}.pg .h.done{}.pg .n{position:absolute;right:10px;bottom:8px;font-size:12px;color:#8E8E93}
+.chip{position:absolute;left:10px;top:10px;background:rgba(0,0,0,.66);color:#fff;border:0;border-radius:12px;padding:5px 10px;font:600 13px system-ui;cursor:pointer}
+.fade{position:absolute;background:rgba(255,255,255,.78);pointer-events:none;border-radius:4px}
+.bar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(760px,calc(100% - 20px));background:var(--card);border-radius:22px;box-shadow:0 8px 30px rgba(0,0,0,.18);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.row{display:flex;align-items:center;gap:8px}.row button{border:0;background:none;color:var(--a);font:600 15px system-ui;min-width:38px;height:38px;border-radius:19px;cursor:pointer}.row .pp{background:var(--a);color:#fff;width:44px;height:44px;border-radius:22px;font-size:18px}
+input[type=range]{flex:1;accent-color:var(--a)}.tm{font:13px ui-monospace,monospace;color:var(--m);min-width:92px;text-align:right}
+.tx{max-height:0;overflow:auto;transition:max-height .3s;font-size:15px}.tx.open{max-height:34vh}.tx p{margin:0;padding:6px 8px;border-radius:10px;cursor:pointer}.tx p.cur{background:rgba(10,132,255,.12)}.tx time{color:var(--m);font:12px ui-monospace,monospace;margin-right:8px}
+.q{width:100%;border:0;background:var(--bg);color:var(--t);border-radius:10px;padding:8px 10px;font:15px system-ui}mark{background:#FFD60A;color:#000;border-radius:3px}
+.note{max-width:900px;margin:8px auto;padding:0 16px;color:var(--m);font-size:13px}</style></head><body>
+<header><h1>${esc(b.title)}</h1><p id="sub"></p></header><div id="pages"></div><p class="note">Tocca una riga scritta: senti cosa si diceva in quel momento. Le parti non ancora scritte sono sbiadite mentre ascolti. Creato con Orbita.</p>
+<div class="bar" id="bar" hidden><div class="tx" id="tx"><input class="q" id="q" placeholder="Cerca una parola detta…"><div id="txl"></div></div><div class="row"><button class="pp" id="pp">▶︎</button><button id="bk">↺15</button><input type="range" id="sk" min="0" max="1000" value="0"><button id="fw">15↻</button><span class="tm" id="tm">0:00</span><button id="rt">1×</button><button id="tt" title="Trascrizione">📝</button><select id="rs" hidden></select></div></div>
+<scr${""}ipt>const D=${JSON.stringify(data).replace(/</g, '\\u003c')};
+const $=s=>document.querySelector(s),f=s=>{s=Math.max(0,Math.floor(s||0));const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=String(s%60).padStart(2,'0');return h?h+':'+String(m).padStart(2,'0')+':'+x:m+':'+x};
+let cur=0,au=null,rate=1;const P=$('#pages');$('#sub').textContent=D.pages.length+(D.pages.length===1?' pagina':' pagine')+(D.recs.length?' · '+D.recs.length+(D.recs.length===1?' registrazione':' registrazioni'):'')+' · '+D.made;
+D.pages.forEach((p,i)=>{const d=document.createElement('div');d.className='pg';d.dataset.i=i;d.innerHTML='<img src="'+p.img+'" alt="Pagina '+(i+1)+'" loading="lazy"><span class="n">'+(i+1)+'</span>';p.hit.forEach(h=>{const e=document.createElement('div');e.className='h';e.style.cssText='left:'+h[2]+'%;top:'+h[3]+'%;width:'+Math.max(h[4],1.5)+'%;height:'+Math.max(h[5],1.5)+'%';e.dataset.r=h[0];e.dataset.t=h[1];e.onclick=()=>play(h[0],Math.max(0,h[1]-2));d.appendChild(e)});const a=p.hit.filter(h=>h[0]===0||true);if(a.length){const m=a.reduce((x,y)=>y[1]<x[1]?y:x);const c=document.createElement('button');c.className='chip';c.textContent='🎧 '+f(m[1]);c.onclick=()=>play(m[0],Math.max(0,m[1]-1));d.appendChild(c)}P.appendChild(d)});
+if(D.recs.some(r=>r.src)){$('#bar').hidden=false;if(D.recs.length>1){const s=$('#rs');s.hidden=false;s.innerHTML=D.recs.map((r,i)=>'<option value="'+i+'">Registrazione '+(i+1)+'</option>').join('');s.onchange=()=>load(+s.value)}load(0)}else if(D.recs.some(r=>r.tx.length)){$('#bar').hidden=false;$('#pp').disabled=true;$('#tx').classList.add('open');tx()}
+function load(i){cur=i;const r=D.recs[i];if(au){au.pause()}au=new Audio(r.src);au.playbackRate=rate;au.ontimeupdate=tick;au.onplay=au.onpause=()=>{$('#pp').textContent=au.paused?'▶︎':'❚❚'};tx()}
+function play(i,t){if(!D.recs[i]||!D.recs[i].src)return;if(i!==cur){load(i);$('#rs').value=i}const go=()=>{au.currentTime=t;au.play()};au.readyState>0?go():au.addEventListener('loadedmetadata',go,{once:true});au.load&&au.readyState===0&&au.load()}
+let lastPg=-1,user=0;addEventListener('wheel',()=>user=Date.now(),{passive:true});addEventListener('touchmove',()=>user=Date.now(),{passive:true});
+function tick(){const t=au.currentTime,d=au.duration||D.recs[cur].dur||1;$('#sk').value=t/d*1000;$('#tm').textContent=f(t)+' / '+f(d);
+ let pg=-1,best=-1;document.querySelectorAll('.pg .h').forEach(e=>{const on=+e.dataset.r===cur;const at=+e.dataset.t;e.style.background=on&&at>t?'rgba(255,255,255,.72)':'';if(on&&at<=t&&at>best){best=at;pg=+e.parentNode.dataset.i}});
+ document.querySelectorAll('.pg').forEach(e=>e.classList.toggle('cur',+e.dataset.i===pg));if(pg>=0&&pg!==lastPg&&Date.now()-user>5000){lastPg=pg;document.querySelector('.pg[data-i="'+pg+'"]').scrollIntoView({behavior:'smooth',block:'start'})}
+ const L=document.querySelectorAll('#txl p');let c=null;L.forEach(p=>{p.classList.remove('cur');if(+p.dataset.t<=t+.3)c=p});if(c){c.classList.add('cur');const T=$('#tx');if($('#tx').classList.contains('open')&&!$('#q').value){const y=c.offsetTop-T.offsetTop;if(y<T.scrollTop||y>T.scrollTop+T.clientHeight-40)T.scrollTop=y-40}}}
+function tx(){const r=D.recs[cur],q=$('#q').value.trim().toLowerCase();$('#txl').innerHTML=r.tx.filter(x=>!q||x[1].toLowerCase().includes(q)).map(x=>{let h=x[1].replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));if(q){const i=h.toLowerCase().indexOf(q);if(i>=0)h=h.slice(0,i)+'<mark>'+h.slice(i,i+q.length)+'</mark>'+h.slice(i+q.length)}return '<p data-t="'+x[0]+'"><time>'+f(x[0])+'</time>'+h+'</p>'}).join('')||(r.tx.length?'<p>Nessuna frase.</p>':'<p>Nessuna trascrizione.</p>');document.querySelectorAll('#txl p[data-t]').forEach(p=>p.onclick=()=>play(cur,Math.max(0,+p.dataset.t-1)))}
+$('#q').oninput=tx;$('#pp').onclick=()=>au&&(au.paused?au.play():au.pause());$('#bk').onclick=()=>au&&(au.currentTime-=15);$('#fw').onclick=()=>au&&(au.currentTime+=15);$('#sk').oninput=e=>{if(au)au.currentTime=e.target.value/1000*(au.duration||0)};
+$('#rt').onclick=()=>{const R=[1,1.25,1.5,2,.75];rate=R[(R.indexOf(rate)+1)%R.length];if(au)au.playbackRate=rate;$('#rt').textContent=String(rate).replace('.',',')+'×'};$('#tt').onclick=()=>$('#tx').classList.toggle('open');
+addEventListener('keydown',e=>{if(e.key===' '&&e.target.tagName!=='INPUT'&&au){e.preventDefault();au.paused?au.play():au.pause()}});<\/script></body></html>`; },
+  async run(b) { const n = await this.size(b), mb = n / 1048576, recs = this.recsOf(b); const go = async (audio) => { Island.toast({ icon: 'download', t: 'Preparo il quaderno che suona…', ms: 4000 }); try { const h = await this.build(b, audio); const bl = new Blob([h], { type: 'text/html' }); await saveBlob(bl, `${b.title} - quaderno che suona.html`); Island.toast({ icon: 'check', c: 'var(--green)', t: 'Quaderno pronto', s: `${(bl.size / 1048576).toFixed(1)} MB · si apre in qualsiasi browser, anche offline`, ms: 3600 }); } catch (e) { Island.toast({ icon: 'x', c: 'var(--red)', t: 'Non riesco a preparare il file', s: String(e && e.message || ''), ms: 3000 }); } };
+    const sh = openSheet({ title: '🎧 Quaderno che suona', left: { label: 'Annulla' }, body: `<p style="margin:0">Un unico file che si apre in qualsiasi browser, anche senza Orbita e senza internet: le pagine, ${recs.length ? 'l\'audio della lezione e la trascrizione' : 'e basta (non ci sono registrazioni)'}. Si tocca una riga e si sente quel momento.</p>
+      <div class="list">${recs.length ? `<button class="row" id="nxA"><span class="tile-ico" style="background:var(--pink)">${HEADPH}</span><span class="grow"><div class="t">Con l'audio</div><div class="s">Circa ${Math.max(1, Math.round(mb * 1.37 + b.pages.length * .25))} MB${mb > 60 ? ' · pesante da mandare in chat: meglio un link o una chiavetta' : ''}</div></span></button>` : ''}
+      <button class="row" id="nxN"><span class="tile-ico" style="background:var(--blue)">${ico('pages')}</span><span class="grow"><div class="t">${recs.length ? 'Solo pagine e trascrizione' : 'Solo le pagine'}</div><div class="s">Leggero · circa ${Math.max(1, Math.round(b.pages.length * .25))} MB</div></span></button></div>`,
+      onMount: el => { const a = $('#nxA', el); if (a) a.onclick = () => { sh.close(); go(true); }; $('#nxN', el).onclick = () => { sh.close(); go(false); }; } }); },
+};
+ACT.nbPlayable = () => Board.b && NB.is(Board.b) && NBX.run(Board.b);
+/* PDF: the audio span of each page, then the transcript */
+function nbPdfPage(doc, b, i, W, H) { const recs = NBX.recsOf(b); if (!recs.length) return; const parts = []; recs.forEach((r, k) => { const s = NBX.span(b, i, r); if (s) parts.push(`${recs.length > 1 ? 'Registrazione ' + (k + 1) + ' ' : 'Audio '}${RP.fmt(s[0])}-${RP.fmt(s[1])}`); }); if (!parts.length) return;
+  try { doc.setFontSize(8); doc.setTextColor(142, 142, 147); doc.text(parts.join('  |  ') + '  -  ascoltala nel quaderno di Orbita', 8, H - 5); doc.setTextColor(0, 0, 0); } catch (_) {} }
+function nbPdfEnd(doc, b) { const recs = NBX.recsOf(b).filter(r => (r.tx || []).length); if (!recs.length) return;
+  try { recs.forEach((r, k) => { doc.addPage([210, 297], 'p'); let y = 20; doc.setFontSize(16); doc.text(`Trascrizione${recs.length > 1 ? ' ' + (k + 1) : ''} - ${new Date(r.t0).toLocaleString('it-IT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}`, 14, y); y += 9; doc.setFontSize(10);
+      for (const x of r.tx) { const L = doc.splitTextToSize(`[${RP.fmt(x.s)}] ${x.t}`, 182); for (const l of L) { if (y > 284) { doc.addPage([210, 297], 'p'); y = 16; } doc.text(l, 14, y); y += 5; } } }); } catch (_) {} }
+/* ⋯ menu */
+{ const oMore = ACT.bMore; ACT.bMore = (...a) => { oMore(...a); const sh = Sheets[Sheets.length - 1], host = sh && $$('.list', sh.el).find(l => !l.classList.contains('flat')); const b = Board.b; if (!host || !b || !NB.is(b)) return; const pdf = $('#nbPdf', host);
+    const h = `<button class="row" id="nxRun"><span class="tile-ico" style="background:var(--pink)">${HEADPH}</span><span class="grow"><div class="t">Quaderno che suona</div><div class="s">Un file da passare ai compagni: pagine + audio + trascrizione, si tocca una riga e si sente</div></span></button>`; pdf ? pdf.insertAdjacentHTML('afterend', h) : host.insertAdjacentHTML('beforeend', h); $('#nxRun', sh.el).onclick = () => { sh.close(); NBX.run(b); }; }; }
+
+/* generated from the libraries' own LICENSE files (vendor/LICENSES) */
+const LIC_APACHE = "Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the purposes\n      of this License, Derivative Works shall not include works that remain\n      separable from, or merely link (or bind by name) to the interfaces of,\n      the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including\n      the original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for reasonable and customary use in describing the\n      origin of the Work and reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Additional Liability. While redistributing\n      the Work or Derivative Works thereof, You may choose to offer,\n      and charge a fee for, acceptance of support, warranty, indemnity,\n      or other liability obligations and/or rights consistent with this\n      License. However, in accepting such obligations, You may act only\n      on Your own behalf and on Your sole responsibility, not on behalf\n      of any other Contributor, and only if You agree to indemnify,\n      defend, and hold each Contributor harmless for any liability\n      incurred by, or claims asserted against, such Contributor by reason\n      of your accepting any such warranty or additional liability.\n\n   END OF TERMS AND CONDITIONS";
+const LIC_LIBS = [["pdf.js", "3.11.174", "Copyright 2023 Mozilla Foundation", "Apache 2.0", "https://github.com/mozilla/pdf.js", null], ["jsPDF", "2.5.1", null, "MIT", "https://github.com/parallax/jsPDF", "Copyright\n(c) 2010-2021 James Hall, https://github.com/MrRio/jsPDF\n(c) 2015-2021 yWorks GmbH, https://www.yworks.com/\n\nPermission is hereby granted, free of charge, to any person obtaining\na copy of this software and associated documentation files (the\n\"Software\"), to deal in the Software without restriction, including\nwithout limitation the rights to use, copy, modify, merge, publish,\ndistribute, sublicense, and/or sell copies of the Software, and to\npermit persons to whom the Software is furnished to do so, subject to\nthe following conditions:\n\nThe above copyright notice and this permission notice shall be\nincluded in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND,\nEXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND\nNONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE\nLIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION\nWITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."], ["pdf-lib", "1.17.1", null, "MIT", "https://github.com/Hopding/pdf-lib", "MIT License\n\nCopyright (c) 2019 Andrew Dillon\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."], ["JSZip", "3.10.1", null, "MIT (scelta tra MIT e GPLv3)", "https://github.com/Stuk/jszip", "The MIT License\n\nCopyright (c) 2009-2016 Stuart Knightley, David Duponchel, Franz Buchinger, António Afonso\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE."], ["SheetJS Community Edition", "0.18.5", "Copyright (C) 2012-present SheetJS LLC", "Apache 2.0", "https://sheetjs.com", null], ["Mammoth", "1.13.0", null, "BSD 2-Clause", "https://github.com/mwilliamson/mammoth.js", "Copyright (c) 2013, Michael Williamson\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met: \n\n1. Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer. \n2. Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution. \n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."], ["KaTeX", "0.16.9", null, "MIT", "https://katex.org", "The MIT License (MIT)\n\nCopyright (c) 2013-2020 Khan Academy and other contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."], ["Tesseract.js", "5.1.1", "Copyright Project Naptha e contributori di Tesseract.js", "Apache 2.0", "https://github.com/naptha/tesseract.js", null], ["Tesseract OCR (motore e dati delle lingue, scaricati al primo uso)", "5", "Copyright Google e contributori di Tesseract", "Apache 2.0", "https://github.com/tesseract-ocr/tesseract", null], ["ZXing (TypeScript)", "0.21.3", null, "Apache 2.0 e altre licenze dei componenti", "https://github.com/zxing-js/library", "Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the purposes\n      of this License, Derivative Works shall not include works that remain\n      separable from, or merely link (or bind by name) to the interfaces of,\n      the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including\n      the original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for reasonable and customary use in describing the\n      origin of the Work and reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Additional Liability. While redistributing\n      the Work or Derivative Works thereof, You may choose to offer,\n      and charge a fee for, acceptance of support, warranty, indemnity,\n      or other liability obligations and/or rights consistent with this\n      License. However, in accepting such obligations, You may act only\n      on Your own behalf and on Your sole responsibility, not on behalf\n      of any other Contributor, and only if You agree to indemnify,\n      defend, and hold each Contributor harmless for any liability\n      incurred by, or claims asserted against, such Contributor by reason\n      of your accepting any such warranty or additional liability.\n\n   END OF TERMS AND CONDITIONS\n\n   APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright [yyyy] [name of copyright owner]\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.\n\n========================================================================\njai-imageio\n========================================================================\n\nCopyright (c) 2005 Sun Microsystems, Inc.\nCopyright © 2010-2014 University of Manchester\nCopyright © 2010-2015 Stian Soiland-Reyes\nCopyright © 2015 Peter Hull\nAll Rights Reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions\nare met:\n\n- Redistribution of source code must retain the above copyright\n  notice, this list of conditions and the following disclaimer.\n\n- Redistribution in binary form must reproduce the above copyright\n  notice, this list of conditions and the following disclaimer in\n  the documentation and/or other materials provided with the\n  distribution.\n\nNeither the name of Sun Microsystems, Inc. or the names of\ncontributors may be used to endorse or promote products derived\nfrom this software without specific prior written permission.\n\nThis software is provided \"AS IS,\" without a warranty of any\nkind. ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND\nWARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT, ARE HEREBY\nEXCLUDED. SUN MIDROSYSTEMS, INC. (\"SUN\") AND ITS LICENSORS SHALL\nNOT BE LIABLE FOR ANY DAMAGES SUFFERED BY LICENSEE AS A RESULT OF\nUSING, MODIFYING OR DISTRIBUTING THIS SOFTWARE OR ITS\nDERIVATIVES. IN NO EVENT WILL SUN OR ITS LICENSORS BE LIABLE FOR\nANY LOST REVENUE, PROFIT OR DATA, OR FOR DIRECT, INDIRECT, SPECIAL,\nCONSEQUENTIAL, INCIDENTAL OR PUNITIVE DAMAGES, HOWEVER CAUSED AND\nREGARDLESS OF THE THEORY OF LIABILITY, ARISING OUT OF THE USE OF OR\nINABILITY TO USE THIS SOFTWARE, EVEN IF SUN HAS BEEN ADVISED OF THE\nPOSSIBILITY OF SUCH DAMAGES.\n\nYou acknowledge that this software is not designed or intended for\nuse in the design, construction, operation or maintenance of any\nnuclear facility."], ["Font DejaVu", "2.37", null, "Licenza Bitstream Vera / Arev, modifiche DejaVu di pubblico dominio", "https://dejavu-fonts.github.io", "Fonts are (c) Bitstream (see below). DejaVu changes are in public domain.\nGlyphs imported from Arev fonts are (c) Tavmjong Bah (see below)\n\n\nBitstream Vera Fonts Copyright\n------------------------------\n\nCopyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is\na trademark of Bitstream, Inc.\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof the fonts accompanying this license (\"Fonts\") and associated\ndocumentation files (the \"Font Software\"), to reproduce and distribute the\nFont Software, including without limitation the rights to use, copy, merge,\npublish, distribute, and/or sell copies of the Font Software, and to permit\npersons to whom the Font Software is furnished to do so, subject to the\nfollowing conditions:\n\nThe above copyright and trademark notices and this permission notice shall\nbe included in all copies of one or more of the Font Software typefaces.\n\nThe Font Software may be modified, altered, or added to, and in particular\nthe designs of glyphs or characters in the Fonts may be modified and\nadditional glyphs or characters may be added to the Fonts, only if the fonts\nare renamed to names not containing either the words \"Bitstream\" or the word\n\"Vera\".\n\nThis License becomes null and void to the extent applicable to Fonts or Font\nSoftware that has been modified and is distributed under the \"Bitstream\nVera\" names.\n\nThe Font Software may be sold as part of a larger software package but no\ncopy of one or more of the Font Software typefaces may be sold by itself.\n\nTHE FONT SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\nOR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT,\nTRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL BITSTREAM OR THE GNOME\nFOUNDATION BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING\nANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES,\nWHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF\nTHE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE\nFONT SOFTWARE.\n\nExcept as contained in this notice, the names of Gnome, the Gnome\nFoundation, and Bitstream Inc., shall not be used in advertising or\notherwise to promote the sale, use or other dealings in this Font Software\nwithout prior written authorization from the Gnome Foundation or Bitstream\nInc., respectively. For further information, contact: fonts at gnome dot\norg.\n\nArev Fonts Copyright\n------------------------------\n\nCopyright (c) 2006 by Tavmjong Bah. All Rights Reserved.\n\nPermission is hereby granted, free of charge, to any person obtaining\na copy of the fonts accompanying this license (\"Fonts\") and\nassociated documentation files (the \"Font Software\"), to reproduce\nand distribute the modifications to the Bitstream Vera Font Software,\nincluding without limitation the rights to use, copy, merge, publish,\ndistribute, and/or sell copies of the Font Software, and to permit\npersons to whom the Font Software is furnished to do so, subject to\nthe following conditions:\n\nThe above copyright and trademark notices and this permission notice\nshall be included in all copies of one or more of the Font Software\ntypefaces.\n\nThe Font Software may be modified, altered, or added to, and in\nparticular the designs of glyphs or characters in the Fonts may be\nmodified and additional glyphs or characters may be added to the\nFonts, only if the fonts are renamed to names not containing either\nthe words \"Tavmjong Bah\" or the word \"Arev\".\n\nThis License becomes null and void to the extent applicable to Fonts\nor Font Software that has been modified and is distributed under the \n\"Tavmjong Bah Arev\" names.\n\nThe Font Software may be sold as part of a larger software package but\nno copy of one or more of the Font Software typefaces may be sold by\nitself.\n\nTHE FONT SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND,\nEXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT\nOF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL\nTAVMJONG BAH BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,\nINCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL\nDAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\nFROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM\nOTHER DEALINGS IN THE FONT SOFTWARE.\n\nExcept as contained in this notice, the name of Tavmjong Bah shall not\nbe used in advertising or otherwise to promote the sale, use or other\ndealings in this Font Software without prior written authorization\nfrom Tavmjong Bah. For further information, contact: tavmjong @ free\n. fr.\n\nTeX Gyre DJV Math\n-----------------\nFonts are (c) Bitstream (see below). DejaVu changes are in public domain.\n\nMath extensions done by B. Jackowski, P. Strzelczyk and P. Pianowski\n(on behalf of TeX users groups) are in public domain.\n\nLetters imported from Euler Fraktur from AMSfonts are (c) American\nMathematical Society (see below).\nBitstream Vera Fonts Copyright\nCopyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera\nis a trademark of Bitstream, Inc.\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof the fonts accompanying this license (“Fonts”) and associated\ndocumentation\nfiles (the “Font Software”), to reproduce and distribute the Font Software,\nincluding without limitation the rights to use, copy, merge, publish,\ndistribute,\nand/or sell copies of the Font Software, and to permit persons  to whom\nthe Font Software is furnished to do so, subject to the following\nconditions:\n\nThe above copyright and trademark notices and this permission notice\nshall be\nincluded in all copies of one or more of the Font Software typefaces.\n\nThe Font Software may be modified, altered, or added to, and in particular\nthe designs of glyphs or characters in the Fonts may be modified and\nadditional\nglyphs or characters may be added to the Fonts, only if the fonts are\nrenamed\nto names not containing either the words “Bitstream” or the word “Vera”.\n\nThis License becomes null and void to the extent applicable to Fonts or\nFont Software\nthat has been modified and is distributed under the “Bitstream Vera”\nnames.\n\nThe Font Software may be sold as part of a larger software package but\nno copy\nof one or more of the Font Software typefaces may be sold by itself.\n\nTHE FONT SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS\nOR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT,\nTRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL BITSTREAM OR THE GNOME\nFOUNDATION\nBE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL,\nSPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, WHETHER IN AN\nACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF THE USE OR\nINABILITY TO USE\nTHE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE FONT SOFTWARE.\nExcept as contained in this notice, the names of GNOME, the GNOME\nFoundation,\nand Bitstream Inc., shall not be used in advertising or otherwise to promote\nthe sale, use or other dealings in this Font Software without prior written\nauthorization from the GNOME Foundation or Bitstream Inc., respectively.\nFor further information, contact: fonts at gnome dot org.\n\nAMSFonts (v. 2.2) copyright\n\nThe PostScript Type 1 implementation of the AMSFonts produced by and\npreviously distributed by Blue Sky Research and Y&Y, Inc. are now freely\navailable for general use. This has been accomplished through the\ncooperation\nof a consortium of scientific publishers with Blue Sky Research and Y&Y.\nMembers of this consortium include:\n\nElsevier Science IBM Corporation Society for Industrial and Applied\nMathematics (SIAM) Springer-Verlag American Mathematical Society (AMS)\n\nIn order to assure the authenticity of these fonts, copyright will be\nheld by\nthe American Mathematical Society. This is not meant to restrict in any way\nthe legitimate use of the fonts, such as (but not limited to) electronic\ndistribution of documents containing these fonts, inclusion of these fonts\ninto other public domain or commercial font collections or computer\napplications, use of the outline data to create derivative fonts and/or\nfaces, etc. However, the AMS does require that the AMS copyright notice be\nremoved from any derivative versions of the fonts which have been altered in\nany way. In addition, to ensure the fidelity of TeX documents using Computer\nModern fonts, Professor Donald Knuth, creator of the Computer Modern faces,\nhas requested that any alterations which yield different font metrics be\ngiven a different name.\n\n$Id$"], ["Electron (solo programma per computer)", "44", null, "MIT", "https://www.electronjs.org", "Copyright (c) Electron contributors\nCopyright (c) 2013-2020 GitHub Inc.\n\nPermission is hereby granted, free of charge, to any person obtaining\na copy of this software and associated documentation files (the\n\"Software\"), to deal in the Software without restriction, including\nwithout limitation the rights to use, copy, modify, merge, publish,\ndistribute, sublicense, and/or sell copies of the Software, and to\npermit persons to whom the Software is furnished to do so, subject to\nthe following conditions:\n\nThe above copyright notice and this permission notice shall be\nincluded in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND,\nEXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND\nNONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE\nLIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION\nWITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."]];
+
+/* =========================================================================
+   x9p_personal — the personal edition (only in Orbita personale)
+   Everything the shop version leaves out stays here: WhatsApp and the
+   message inbox (94_messages), the full Spotify / Apple Music controls,
+   the OSM maps with routes, Open-Meteo, the position from the connection
+   and the Trenitalia / Italo timetables with live delays. This file only
+   adds what the licence page needs for this edition.
+   ========================================================================= */
+LIC_LIBS.splice(7, 0, ['Leaflet', '1.9.4', 'Copyright (c) 2010-2023, Volodymyr Agafonkin; Copyright (c) 2010-2011, CloudMade', 'BSD 2-Clause', 'https://leafletjs.com', "BSD 2-Clause License\n\nCopyright (c) 2010-2023, Volodymyr Agafonkin\nCopyright (c) 2010-2011, CloudMade\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n"]);
+const DATAS = [
+  ['Meteo', 'Open-Meteo', 'CC BY 4.0 · uso non commerciale', 'https://open-meteo.com'], ['Mappe', '© OpenStreetMap contributors', 'ODbL 1.0', 'https://www.openstreetmap.org/copyright'],
+  ['Indirizzi', 'Nominatim (OpenStreetMap)', 'ODbL 1.0', 'https://nominatim.org'], ['Percorsi', 'OSRM', 'BSD 2-Clause · server dimostrativo', 'https://project-osrm.org'],
+  ['Nome della città', 'BigDataCloud', 'Condizioni di BigDataCloud', 'https://www.bigdatacloud.com'], ['Treni', 'Trenitalia e Italo (orari pubblici dei loro siti)', 'Solo uso personale', 'https://www.trenitalia.com'],
+  ['Prodotti alimentari', 'Open Food Facts e contributori', 'ODbL 1.0 (database), CC BY-SA (immagini)', 'https://world.openfoodfacts.org'], ['Libri', 'Open Library (Internet Archive)', 'Dati aperti', 'https://openlibrary.org'],
+  ['Articoli scientifici', 'Crossref', 'Metadati CC0', 'https://www.crossref.org'], ['Musica', 'Spotify e Apple Music', 'Condizioni dei rispettivi servizi', 'https://developer.spotify.com/terms'],
+];
+Promise.resolve().then(() => { const oS = VIEWS.settings.render; VIEWS.settings.render = function () { return oS.call(this) + `<div class="section-h">Informazioni</div><div class="list"><button class="row" data-act="licenses"><span class="tile-ico" style="background:var(--gray)">${ico('book')}</span><span class="grow"><div class="t">Licenze e fonti dei dati</div><div class="s">Orbita personale · librerie e servizi usati</div></span>${ico('right', 'sm')}</button></div>`; }; });
+
+/* =========================================================================
+   x9e_licenses — "Licenze e fonti dei dati" with the full licence texts
+   Every library Orbita ships: name, version, copyright and its own licence
+   text (Apache 2.0 shown once, as the licence asks: a copy of it), plus the
+   data sources that require a credit. The same files are in vendor/LICENSES.
+   ========================================================================= */
+ACT.licenses = () => { const pre = t => `<pre class="lic-t">${esc(t)}</pre>`;
+  const lib = ([n, v, c, l, u, t], i) => `<details class="lic"><summary><span class="grow" style="min-width:0"><b>${esc(n)}</b> <span class="muted">${esc(v)}</span><div class="s">${esc(l)}</div></span></summary>
+    <div class="lic-b">${c ? `<p style="margin:0">${esc(c)}</p>` : ''}${t ? pre(t) : `<p class="muted" style="margin:0">Licenza Apache 2.0: testo completo in fondo a questa pagina.</p>`}<a href="${esc(u)}" target="_blank" rel="noopener" style="font-size:13px">${esc(u.replace(/^https?:\/\//, ''))}</a></div></details>`;
+  const data = ([n, a, l, u]) => `<a class="row" href="${esc(u)}" target="_blank" rel="noopener"><span class="grow" style="min-width:0"><div class="t">${esc(n)}</div><div class="s">${esc(a)} · ${esc(l)}</div></span>${ico('right', 'sm')}</a>`;
+  openSheet({ title: 'Licenze e fonti dei dati', wide: true, left: { label: 'Chiudi' }, body: `<p class="muted" style="margin:0;font-size:14px">Il codice di Orbita è scritto da zero. Per alcune funzioni usa queste librerie open source, distribuite insieme all'app con il loro avviso di copyright e la loro licenza. Tocca una libreria per leggerne il testo.</p>
+    <div class="section-h" style="margin:4px 0 0">Librerie</div><div class="lic-l">${LIC_LIBS.map(lib).join('')}</div>
+    <p class="muted" style="margin:0;font-size:12.5px">Alcuni file minificati includono a loro volta piccoli componenti di terze parti (per esempio regenerator-runtime, MIT): i relativi avvisi sono conservati all'inizio di ogni file. Il programma per computer contiene anche le licenze di Chromium (file LICENSES.chromium.html nella cartella del programma).</p>
+    <div class="section-h" style="margin:4px 0 0">Dati</div><div class="list">${DATAS.map(data).join('')}</div>
+    <details class="lic"><summary><span class="grow"><b>Apache License 2.0</b><div class="s">Testo completo, valido per pdf.js, SheetJS, Tesseract.js, Tesseract OCR</div></span></summary><div class="lic-b">${pre(LIC_APACHE)}</div></details>
+    <p class="muted" style="margin:0;font-size:12.5px">Nessuna libreria contiene un file NOTICE da riportare. I nomi e i marchi citati appartengono ai rispettivi proprietari e non implicano alcuna approvazione o collaborazione.</p>` }); };
+
+/* =========================================================================
+   xa_edition — every page knows which Orbita it is
+   EDITION ('personale' | 'commerciale') is written by build.sh at the top of
+   the script and by mkweb.sh in the orbita-edition tag. Update files are
+   checked in 74_desktop; here the page itself notices when, on the same
+   device, the other edition has taken the place of the one you were using
+   (for example the wrong zip uploaded to GitHub): it says so once, and the
+   data stay as they are, since both editions read the same data.
+   ========================================================================= */
+const EdGuard = {
+  K: 'orbita.edition', N: { personale: 'Orbita personale', commerciale: 'Orbita commerciale' },
+  prev() { try { return localStorage.getItem(this.K); } catch (_) { return null; } },
+  keep() { try { localStorage.setItem(this.K, EDITION); } catch (_) {} },
+  check() { const p = this.prev(); if (!p) return this.keep(); if (p === EDITION) return;
+    openSheet({ title: 'È cambiata edizione', left: { label: 'Va bene', act: s => { this.keep(); s.close(); } }, onClose: () => this.keep(),
+      body: `<p style="margin:0">Su questo dispositivo usavi <b>${esc(this.N[p] || p)}</b>, ma questa è <b>${esc(this.N[EDITION])}</b>.</p>
+        <p class="muted" style="margin:0;font-size:14px">${EDITION === 'commerciale' ? 'Qui non ci sono WhatsApp, i messaggi, i controlli completi di Spotify, le mappe dentro Orbita e gli orari dei treni.' : 'Qui ci sono anche WhatsApp, i messaggi, Spotify completo, le mappe e i treni.'} I tuoi dati sono gli stessi e restano tutti.</p>
+        <p class="muted" style="margin:0;font-size:14px">Se è successo per sbaglio (per esempio è stato caricato lo zip dell'altra edizione), rimetti quello con “${esc(p)}” nel nome.</p>` }); },
+};
+Promise.resolve().then(() => setTimeout(() => EdGuard.check(), 1500));
+
+/* =========================================================================
+   xp1_speed — Orbita personale: faster with a lot of data
+   Measured on a year of real-sized data (700 events, 900 to-dos, 300 notes,
+   3000 expenses) with the CPU slowed down 4× like an older iPad: most of the
+   start-up went into working out the same days again and again. Every card
+   of Oggi, the study plan and the calendar asked "what's on day X?" for the
+   same days, and each answer re-read all the events and re-built dates.
+   · recMatch: day numbers from a small cache instead of new Date objects;
+   · itemsOn: one answer per day per moment (the cache empties by itself as
+     soon as the current piece of work ends, or when any data is saved);
+   · the study plan of all exams: worked out once per moment, not per day.
+   ========================================================================= */
+const DayN = { m: new Map(),
+  of(k) { let v = this.m.get(k); if (v === undefined) { const y = +k.slice(0, 4), mo = +k.slice(5, 7), d = +k.slice(8, 10); v = Date.UTC(y, mo - 1, d) / 864e5; if (this.m.size > 4000) this.m.clear(); this.m.set(k, v); } return v; } };
+recMatch = function (ev, k) {
+  const sd = ev.date; if (!sd || k < sd) return false;
+  if (ev.until && k > ev.until) return false;
+  const r = ev.rec || 'none';
+  if (r === 'none') return k === sd && !(ev.skip && ev.skip.includes(k));
+  if (ev.skip && ev.skip.length && ev.skip.includes(k)) return false;
+  if (r === 'daily') return true;
+  if (r === 'monthly') return k.slice(8, 10) === sd.slice(8, 10);
+  const a = DayN.of(sd), b = DayN.of(k), wb = (b + 3) % 7; // 1970-01-01 was a Thursday: Monday = 0
+  if (r === 'weekdays') return wb < 5;
+  if (r === 'weekly') return (a + 3) % 7 === wb;
+  if (r === 'biweekly') return (a + 3) % 7 === wb && ((b - a) / 7) % 2 === 0;
+  return false;
+};
+/* one answer per day while the current piece of work runs */
+const Memo = { gen: 0, armed: false, refs: null, items: new Map(), plan: null,
+  clear() { this.items.clear(); this.plan = null; },
+  arm() { if (this.armed) return; this.armed = true; setTimeout(() => { this.armed = false; this.clear(); }, 0); },
+  check() { const R = [S.events, S.exams, S.projects, S.courses, S.profile, typeof Ext !== 'undefined' ? Ext.ev : null, S.contacts, S.social, S.events.length, S.exams.length, typeof Ext !== 'undefined' ? Ext.ev.length : 0];
+    if (!this.refs || R.some((x, i) => x !== this.refs[i])) { this.refs = R; this.clear(); } this.arm(); },
+};
+{ const oT = Store.touch.bind(Store); Store.touch = function () { Memo.clear(); return oT.apply(Store, arguments); };
+  const oA = Store.apply.bind(Store); Store.apply = function () { Memo.clear(); return oA.apply(Store, arguments); }; }
+{ const base = itemsOn; itemsOn = function (k) { Memo.check(); let v = Memo.items.get(k); if (!v) { v = base(k); Memo.items.set(k, v); } return v.slice(); }; }
+{ const oAll = StudyPlan.all.bind(StudyPlan); StudyPlan.all = function () { Memo.check(); return Memo.plan ||= oAll(); }; }
+/* the notebook library drew every page of every cover again at each visit (700 strokes = 0.2 s
+   on an older iPad): now each cover is drawn once and reused until that notebook changes */
+{ const oT = drawThumb, TC = new Map(); drawThumb = function (cv, b) { if (!cv || !b) return;
+    const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1, W = Math.round(r.width * d), H = Math.round(r.height * d); if (!W || !H) return oT(cv, b);
+    const key = [W, H, b.updated || 0, (b.strokes || []).length, b.pages ? b.pages.length : 0, b.paper || '', b.bg || '', b.cover || '', matchMedia('(prefers-color-scheme: dark)').matches].join('|'), c = TC.get(b.id);
+    if (c && c.key === key) { cv.width = W; cv.height = H; cv.getContext('2d').drawImage(c.cv, 0, 0); return; }
+    oT(cv, b); try { const k = document.createElement('canvas'); k.width = cv.width; k.height = cv.height; k.getContext('2d').drawImage(cv, 0, 0); TC.set(b.id, { key, cv: k }); if (TC.size > 80) TC.delete(TC.keys().next().value); } catch (_) {} }; }
+/* a late frame after leaving a notebook tried to paint on a canvas that was gone (error in the console) */
+for (const f of ['paint', 'blit']) { const o = Board[f]; if (typeof o === 'function') Board[f] = function () { if (!this.cv || !this.ctx || !this.b) return; return o.apply(this, arguments); }; }
+
+/* =========================================================================
+   xp2_merge — Orbita personale: two devices, no lost changes
+   Before: each part of the data (all the events, all the to-dos, one note…)
+   travelled as one block and the newest block won. Add a to-do on the PC and
+   one on the iPad before they talk to each other → one of the two was gone.
+   Now every device remembers the last version both agreed on (the "base",
+   in its own IndexedDB) and, when both changed something, merges the three:
+   · lists of things with an id (events, to-dos, expenses, exams…): item by
+     item; added on either side → kept, deleted on one side and untouched on
+     the other → deleted, changed on both sides → field by field;
+   · lists without id (the strokes of a notebook, tags, skipped days…): what
+     each side added stays, what each side removed goes;
+   · the same field changed differently on both sides is a real conflict: the
+     most recent device wins and the other value is kept in "Conflitti di
+     sincronizzazione" (Impostazioni), where one tap puts it back. For the
+     text of a note, the other version becomes a copy of the note.
+   Before sending, the computer and the web version also check whether the
+   cloud has changed in the meantime, and merge first.
+   ========================================================================= */
+const Merge = {
+  isObj: v => v !== null && typeof v === 'object' && !Array.isArray(v),
+  eq: (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b),
+  idOf(x) { return this.isObj(x) && (typeof x.id === 'string' || typeof x.id === 'number') ? String(x.id) : null; },
+  /** three-way merge. pref: 'l' | 'r' wins a real conflict; out.c collects them as {path, keep, other} */
+  run(base, l, r, pref, out, path = []) {
+    if (this.eq(l, r)) return l;
+    if (base !== undefined) { if (this.eq(l, base)) return r; if (this.eq(r, base)) return l; }
+    if (Array.isArray(l) && Array.isArray(r)) {
+      const B = Array.isArray(base) ? base : undefined;
+      if ([...l, ...r].every(x => this.idOf(x) !== null)) return this.byId(B, l, r, pref, out, path);
+      return this.bySet(B, l, r);
+    }
+    if (this.isObj(l) && this.isObj(r)) {
+      const B = this.isObj(base) ? base : undefined, o = {};
+      for (const k of new Set([...Object.keys(r), ...Object.keys(l)])) {
+        const inL = k in l, inR = k in r, b = B ? B[k] : undefined;
+        if (inL && inR) o[k] = this.run(b, l[k], r[k], pref, out, path.concat(k));
+        else if (inL) { if (!B || !(k in B) || !this.eq(l[k], b)) o[k] = l[k]; }      // new here, or changed here and removed there
+        else { if (!B || !(k in B) || !this.eq(r[k], b)) o[k] = r[k]; }
+      }
+      return o;
+    }
+    const keep = pref === 'l' ? l : r, other = pref === 'l' ? r : l;
+    out.c.push({ path, keep, other }); return keep;
+  },
+  byId(B, l, r, pref, out, path) {
+    const m = a => new Map((a || []).map(x => [this.idOf(x), x])), mb = m(B), ml = m(l), mr = m(r), res = [], seen = new Set();
+    const one = id => { if (seen.has(id)) return; seen.add(id); const a = ml.get(id), c = mr.get(id), b = mb.get(id);
+      if (a && c) res.push(this.run(b, a, c, pref, out, path.concat({ id })));
+      else if (a) { if (!B || !b || !this.eq(a, b)) res.push(a); }   // added here, or edited here while deleted there
+      else if (c) { if (!B || !b || !this.eq(c, b)) res.push(c); } };
+    // remote order first, then the local additions in their place
+    r.forEach(x => one(this.idOf(x))); l.forEach((x, i) => { const id = this.idOf(x); if (seen.has(id)) return; const before = res.length; one(id); if (res.length > before && i < l.length - 1) { const prev = i ? this.idOf(l[i - 1]) : null, at = prev ? res.findIndex(y => this.idOf(y) === prev) : -1; if (at >= 0 && at < res.length - 2) res.splice(at + 1, 0, res.pop()); } });
+    return res;
+  },
+  /** lists without ids: a multiset of values (JSON) */
+  bySet(B, l, r) {
+    const key = x => typeof x === 'string' ? 's' + x : JSON.stringify(x), count = a => { const m = new Map(); for (const x of a || []) m.set(key(x), (m.get(key(x)) || 0) + 1); return m; };
+    const cb = count(B), cl = count(l), cr = count(r), res = [], used = new Map();
+    const want = k => { const b = cb.get(k) || 0, a = cl.get(k) || 0, c = cr.get(k) || 0; return B ? Math.max(0, a + c - b) : Math.max(a, c); };
+    for (const x of [...r, ...l]) { const k = key(x), u = used.get(k) || 0; if (u < want(k)) { res.push(x); used.set(k, u + 1); } }
+    return res;
+  },
+};
+/* the agreed versions: stamps in localStorage, values in their own small database */
+const BaseDB = {
+  K: 'orbita.baseU', u: {}, p: null,
+  load() { try { this.u = JSON.parse(localStorage.getItem(this.K) || '{}') || {}; } catch (_) { this.u = {}; } },
+  keep() { clearTimeout(this.t); this.t = setTimeout(() => { try { localStorage.setItem(this.K, JSON.stringify(this.u)); } catch (_) {} }, 400); },
+  open() { return this.p ||= new Promise(res => { try { const r = indexedDB.open('orbita-base', 1); r.onupgradeneeded = () => r.result.createObjectStore('b'); r.onsuccess = () => res(r.result); r.onerror = r.onblocked = () => res(null); } catch (_) { res(null); } }); },
+  async get(id) { const db = await this.open(); if (!db) return undefined; return new Promise(res => { try { const q = db.transaction('b').objectStore('b').get(id); q.onsuccess = () => res(q.result === undefined ? undefined : JSON.parse(q.result)); q.onerror = () => res(undefined); } catch (_) { res(undefined); } }); },
+  async set(id, u, v) { this.u[id] = u; this.keep(); const db = await this.open(); if (!db) return; try { const tx = db.transaction('b', 'readwrite'); if (v == null) tx.objectStore('b').delete(id); else tx.objectStore('b').put(JSON.stringify(v), id); } catch (_) {} },
+};
+BaseDB.load();
+/* conflicts kept on this device, newest first */
+const SyncC = {
+  K: 'orbita.conflicts',
+  all() { try { return JSON.parse(localStorage.getItem(this.K) || '[]'); } catch (_) { return []; } },
+  put(a) { try { localStorage.setItem(this.K, JSON.stringify(a.slice(0, 40))); } catch (_) {} },
+  add(id, list) { if (!list.length) return; const a = this.all(), at = Date.now(); for (const c of list) a.unshift({ id, at, path: c.path, keep: c.keep, other: c.other }); this.put(a); },
+  /** where a path points, for the label */
+  label(c) { const id = c.id, P = { events: 'Calendario', tasks: 'Promemoria', exams: 'Esami', money: 'Spese', profile: 'Impostazioni', courses: 'Corsi', habits: 'Abitudini', goals: 'Obiettivi', journal: 'Diario', projects: 'Progetti', trips: 'Viaggi', focuslog: 'Focus', contacts: 'Contatti' };
+    let base = id.startsWith('note-') ? 'Nota' : id.startsWith('board-') ? 'Quaderno' : P[id] || id, obj = Store.valueOf(id), name = '';
+    if (id.startsWith('note-') || id.startsWith('board-')) name = (obj && obj.title) || '';
+    for (const s of c.path) { if (obj == null) break; if (typeof s === 'object') { obj = (obj || []).find(x => x && String(x.id) === s.id); if (obj && (obj.title || obj.name || obj.note || obj.t)) name = obj.title || obj.name || obj.note || obj.t; } else obj = obj[s]; }
+    const F = { title: 'titolo', name: 'nome', date: 'data', start: 'inizio', end: 'fine', done: 'fatto', due: 'scadenza', time: 'ora', amt: 'importo', note: 'nota', notes: 'note', loc: 'luogo', cat: 'categoria', prio: 'priorità', grade: 'voto', html: 'testo', text: 'testo', rec: 'ripetizione', cfu: 'CFU', status: 'stato', color: 'colore' };
+    const f0 = c.path.filter(s => typeof s === 'string').pop() || '', field = F[f0] || f0;
+    return { where: base + (name ? ' · ' + String(name).slice(0, 50) : ''), field };
+  },
+  /** puts the other value back at that place */
+  use(i) { const a = this.all(), c = a[i]; if (!c) return false; const root = Store.valueOf(c.id); if (root == null) return false;
+    let o = root; const P = c.path; if (!P.length) return false;
+    for (let j = 0; j < P.length - 1; j++) { const s = P[j]; o = typeof s === 'object' ? (o || []).find(x => x && String(x.id) === s.id) : o[s]; if (o == null) return false; }
+    const last = P[P.length - 1]; if (typeof last === 'object') { const k = (o || []).findIndex(x => x && String(x.id) === last.id); if (k < 0) return false; o[k] = c.other; } else o[last] = c.other;
+    [c.keep, c.other] = [c.other, c.keep]; this.put(a); save(c.id.startsWith('note-') || c.id.startsWith('board-') ? c.id : c.id); return true; },
+  show(v) { if (v == null) return '—'; if (typeof v === 'boolean') return v ? 'sì' : 'no'; if (typeof v === 'object') { const s = v.title || v.name || v.t || v.note; return s ? String(s) : JSON.stringify(v).slice(0, 90); } const s = String(v).replace(/<[^>]+>/g, ' '); return s.length > 90 ? s.slice(0, 90) + '…' : s; },
+};
+Object.assign(Store, {
+  late: {},
+  /** merge a remote version into the local one; → the merged value */
+  async mergeIn(id, rv, ru) {
+    const lv = this.valueOf(id), base = await BaseDB.get(id), out = { c: [] };
+    const pref = (this.stamps[id] || 0) > ru ? 'l' : 'r';
+    let mv = Merge.run(base, lv == null ? undefined : JSON.parse(JSON.stringify(lv)), rv, pref, out);
+    /* a note whose text changed on both devices: the other text becomes a copy of the note */
+    if (id.startsWith('note-') && out.c.some(c => c.path.length === 1 && /^(html|text|body)$/.test(c.path[0]))) {
+      const other = pref === 'l' ? rv : lv, nid = uid(); if (other) { S.notes[nid] = { ...other, id: nid, title: (other.title || 'Nota') + ' (dall\'altro dispositivo)', updated: Date.now() }; this.touch('note-' + nid, 200); }
+      out.c = out.c.filter(c => !(c.path.length === 1 && /^(html|text|body)$/.test(c.path[0])));
+      if (other) out.c.push({ path: [], keep: 'Testo di questo dispositivo', other: 'Copiato in «' + S.notes[nid].title + '»', note: true });
+    }
+    SyncC.add(id, out.c.filter(c => c.path.length || c.note));
+    this.merged = (this.merged || 0) + 1; this.conf = (this.conf || 0) + out.c.length;
+    return mv;
+  },
+  /** after a merge: apply, remember the remote as the new base, send the result */
+  async settle(id, rv, ru) {
+    const mv = await this.mergeIn(id, rv, ru);
+    this.apply(id, mv); await BaseDB.set(id, ru, rv);
+    if (!Merge.eq(mv, rv)) this.touch(id, 120); else { this.stamps[id] = ru; this.saveLocalSoon(); }
+    this.saveLocal(); App.remoteChanged(); this.tell();
+  },
+  tell() { clearTimeout(this.tellT); this.tellT = setTimeout(() => { const n = this.merged || 0, c = this.conf || 0; this.merged = this.conf = 0; if (!n) return;
+    Island.toast({ icon: 'refresh', c: c ? 'var(--orange)' : 'var(--green)', t: c ? `Modifiche unite · ${c === 1 ? '1 conflitto' : c + ' conflitti'}` : 'Modifiche dei due dispositivi unite', s: c ? 'Impostazioni › Conflitti di sincronizzazione' : 'Non si è perso niente', ms: c ? 4200 : 2600 }); }, 600); },
+  async flush(id, retried = false) {
+    if (!this.col) return;
+    if (this.inflight[id]) { this.again[id] = true; return; }
+    this.inflight[id] = true;
+    try {
+      /* the cloud may have changed since the last look: merge first (Supabase) */
+      if (!IN_CLAUDE && typeof Cloud !== 'undefined' && Cloud.rest && BaseDB.u[id] != null) {
+        const h = await Cloud.rest('pitwall_docs?select=u,v&id=eq.' + encodeURIComponent(id)).catch(() => null);
+        const row = h && h[0];
+        if (row && +row.u !== BaseDB.u[id] && +row.u !== this.stamps[id]) { const mv = await this.mergeIn(id, row.v, +row.u); this.apply(id, mv); await BaseDB.set(id, +row.u, row.v); this.stamps[id] = Math.max(Date.now(), +row.u + 1); this.saveLocal(); App.remoteChanged(); this.tell(); }
+      }
+      const v = this.valueOf(id), u = this.stamps[id] || Date.now(), ref = this.col.doc(id);
+      if (v == null) { await ref.delete(); BaseDB.set(id, null, null); delete BaseDB.u[id]; }
+      else { const snap = JSON.parse(JSON.stringify(v)); await ref.set({ v: snap, u }); BaseDB.set(id, u, snap); }
+    } catch (e) {
+      const code = e && e.code;
+      if (code === 'unavailable' && !retried) { this.inflight[id] = false; setTimeout(() => this.flush(id, true), 1200 + Math.random() * 800); return; }
+      if (code === 'invalid_argument' && id.startsWith('board-')) Island.toast({ icon: 'pencil', c: 'var(--orange)', t: 'Lavagna troppo grande per la sincronizzazione', s: 'Resta salvata su questo dispositivo. Dividila in più lavagne.', ms: 4200 });
+      else if (code === 'quota_exceeded') Island.toast({ icon: 'x', c: 'var(--red)', t: 'Spazio di sincronizzazione esaurito', s: 'Elimina lavagne o note che non servono più', ms: 4200 });
+      else if (code === 'revoked' || code === 'not_granted') { this.goLocal(); }
+    }
+    this.inflight[id] = false;
+    if (this.late[id]) { const d = this.late[id]; delete this.late[id]; if (d.u !== this.stamps[id]) await this.settle(id, d.v, d.u); }
+    if (this.again[id]) { this.again[id] = false; return this.flush(id); }
+    this.pend.delete(id);
+    if (!this.pend.size) setSync(this.col ? 'on' : 'local');
+  },
+  onSnap(snap) {
+    let changed = false; const remote = new Set(), first = this.first;
+    for (const d of snap.docs) remote.add(d.id);
+    for (const ch of snap.docChanges()) {
+      const id = ch.doc.id;
+      if (ch.type === 'removed') {
+        if (this.pend.has(id) || this.inflight[id]) continue;
+        if (/^(note|board|ann|dtx)-/.test(id) && this.valueOf(id)) {
+          /* deleted on the other device: unless it was changed here since the last agreement */
+          if (BaseDB.u[id] != null && (this.stamps[id] || 0) > BaseDB.u[id]) { this.touch(id, 80); continue; }
+          this.apply(id, null); changed = true; BaseDB.set(id, null, null); delete BaseDB.u[id];
+        }
+        continue;
+      }
+      const d = ch.doc.data(); if (!d) continue;
+      const L = this.stamps[id] || 0, R = d.u || 0, Bu = BaseDB.u[id];
+      if (L === R) { if (Bu !== R) BaseDB.set(id, R, d.v); continue; }
+      if (this.inflight[id]) { this.late[id] = d; continue; }
+      const localEdit = Bu != null ? L > Bu : false, remoteEdit = Bu != null ? R !== Bu : true;
+      if (Bu != null && localEdit && remoteEdit) { this.settle(id, d.v, R); continue; }            // both changed: merge
+      if (Bu != null && localEdit && !remoteEdit) { if (first || !this.pend.has(id)) this.touch(id, 50); continue; }   // only here: send
+      if (Bu == null && L > R) { if (first) this.touch(id, 50); continue; }                        // first time, nothing to compare: as before
+      if (this.pend.has(id)) { this.settle(id, d.v, R); continue; }                                // a change of ours waits to leave: merge it in
+      this.apply(id, d.v); this.stamps[id] = R; BaseDB.set(id, R, d.v); changed = true;
+    }
+    if (first) { this.first = false; for (const id of this.docIdsLocal()) if (!remote.has(id) && this.stamps[id]) this.touch(id, 80); setSync(this.pend.size ? 'busy' : 'on'); }
+    if (changed) { this.saveLocal(); App.remoteChanged(); }
+  },
+});
+/* Impostazioni › Conflitti di sincronizzazione */
+ACT.syncConflicts = () => { const draw = () => { const a = SyncC.all(); return a.length ? `<p class="muted" style="margin:0;font-size:14px">Quando la stessa cosa è stata cambiata in modo diverso su due dispositivi, Orbita tiene la modifica più recente. Qui trovi l'altra: tocca «Usa questa» per rimetterla.</p><div class="list">${a.map((c, i) => { const L = SyncC.label(c); return `<div class="row" style="align-items:flex-start"><span class="grow" style="min-width:0"><div class="t">${esc(L.where)}${L.field ? ` <span class="muted">· ${esc(L.field)}</span>` : ''}</div><div class="s">Tenuto: <b>${esc(SyncC.show(c.keep))}</b></div><div class="s">L'altra: ${esc(SyncC.show(c.other))}</div><div class="s" style="font-size:12px">${new Date(c.at).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</div></span>${c.note ? '' : `<button class="btn sm" data-scu="${i}">Usa questa</button>`}</div>`; }).join('')}</div><button class="btn plain" id="scClr">Svuota l'elenco</button>` : `<div class="empty" style="padding:24px 8px"><div style="font-size:34px">✅</div><b>Nessun conflitto</b><p class="muted" style="margin:6px 0 0">Le modifiche fatte su più dispositivi vengono unite da sole.</p></div>`; };
+  openSheet({ title: 'Conflitti di sincronizzazione', left: { label: 'Chiudi' }, body: '<div id="scBody"></div>', onMount(el) { const paint = () => { $('#scBody', el).innerHTML = draw(); $$('[data-scu]', el).forEach(b => b.onclick = () => { if (SyncC.use(+b.dataset.scu)) { App.refresh(); Island.toast({ icon: 'check', c: 'var(--green)', t: 'Rimessa l\'altra versione', ms: 1800 }); } else Island.toast({ icon: 'x', c: 'var(--orange)', t: 'Quell\'elemento non c\'è più', ms: 2200 }); paint(); }); const c = $('#scClr', el); if (c) c.onclick = () => { SyncC.put([]); paint(); }; }; paint(); } }); };
+
+/* =========================================================================
+   xp3_backup — Orbita personale: automatic backups on iPad and on the web
+   The computer program already copies everything every day. On the iPad and
+   in the browser a backup happened only when you remembered to make one.
+   Now, every week (or every day), by itself:
+   · into Google Drive, folder "Orbita backup", when a Google account with
+     Drive is connected (the last 8 are kept), and always
+   · on this device too (the last 6), so one bad edit or a sync gone wrong
+     can be undone even offline;
+   · optionally locked with a password (AES-GCM, key derived with PBKDF2):
+     without the password nobody can read the copy in Drive.
+   And restoring no longer means "everything or nothing": open a backup,
+   tick only what you want back (the calendar, a few notes, one notebook…)
+   and choose whether to add what is missing or to replace.
+   ========================================================================= */
+/** a small sheet that asks for a password → the text, or null */
+const askPw = (title, sub) => new Promise(done => { let fin = false; const end = v => { if (!fin) { fin = true; done(v); } };
+  openSheet({ title, left: { label: 'Annulla', act: s => { s.close(); end(null); } }, right: { label: 'OK', act: s => { const v = $('#pwIn', s.el).value; end(v || null); s.close(); } }, onClose: () => end(null),
+    body: `<p class="muted" style="margin:0;font-size:14px">${esc(sub)}</p><input class="input" id="pwIn" type="password" autocomplete="new-password" placeholder="Password">`,
+    onMount(el, api) { const i = $('#pwIn', el); setTimeout(() => i.focus(), 250); i.onkeydown = e => { if (e.key === 'Enter') { const v = i.value; end(v || null); api.close(); } }; } }); });
+const AutoBk = {
+  LK: 'orbita.autobk.last', MAXL: 6, MAXD: 8, FOLDER: 'Orbita backup',
+  cfg() { return { every: 'week', ...(S.profile.autoBk || {}) }; },
+  set(k, v) { S.profile.autoBk = { ...this.cfg(), [k]: v }; save('profile'); },
+  last() { try { return +localStorage.getItem(this.LK) || 0; } catch (_) { return 0; } },
+  desk() { return typeof DESK !== 'undefined' && !!DESK; },
+  due() { const e = this.cfg().every; if (e === 'off' || this.desk()) return false; return Date.now() - this.last() > (e === 'day' ? 20 : 6.5 * 24) * 3600e3; },
+  drive() { try { return typeof Drive !== 'undefined' ? Drive.accts()[0] || null : null; } catch (_) { return null; } },
+  /* ---- this device: its own small database ---- */
+  p: null,
+  db() { return this.p ||= new Promise(res => { try { const r = indexedDB.open('orbita-backups', 1); r.onupgradeneeded = () => { r.result.createObjectStore('b'); r.result.createObjectStore('k'); }; r.onsuccess = () => res(r.result); r.onerror = r.onblocked = () => res(null); } catch (_) { res(null); } }); },
+  async tx(st, mode, fn) { const db = await this.db(); if (!db) return null; return new Promise(res => { try { const t = db.transaction(st, mode), s = t.objectStore(st); const q = fn(s); t.oncomplete = () => res(q && 'result' in q ? q.result : true); t.onerror = () => res(null); } catch (_) { res(null); } }); },
+  async localList() { const db = await this.db(); if (!db) return []; return new Promise(res => { try { const out = [], q = db.transaction('b').objectStore('b').openCursor(null, 'prev'); q.onsuccess = () => { const c = q.result; if (c) { const v = c.value; out.push({ key: c.key, at: v.at, size: v.size, enc: v.enc, why: v.why, where: 'local' }); c.continue(); } else res(out); }; q.onerror = () => res([]); } catch (_) { res([]); } }); },
+  async localGet(key) { return this.tx('b', 'readonly', s => s.get(key)); },
+  /* ---- password ---- */
+  async key() { return this.tx('k', 'readonly', s => s.get('key')); },
+  async derive(pw, salt) { const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']); return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']); },
+  async lock(pw) { if (!pw) { await this.tx('k', 'readwrite', s => s.delete('key')); this.set('lock', false); return; } const salt = crypto.getRandomValues(new Uint8Array(16)), k = await this.derive(pw, salt); await this.tx('k', 'readwrite', s => s.put({ k, salt: Array.from(salt) }, 'key')); this.set('lock', true); },
+  b64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); },
+  u8(b) { const s = atob(b), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; },
+  async seal(text) { const K = this.cfg().lock ? await this.key() : null; if (!K) return { text, enc: false };
+    const iv = crypto.getRandomValues(new Uint8Array(12)), ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, K.k, new TextEncoder().encode(text)));
+    return { text: JSON.stringify({ app: 'pitwall-enc', v: 1, salt: this.b64(new Uint8Array(K.salt)), iv: this.b64(iv), ct: this.b64(ct) }), enc: true }; },
+  /** text of a backup → the object; asks for the password when locked */
+  async open(text) { let j = JSON.parse(text); if (j && j.app === 'pitwall-enc') {
+      const pw = await askPw('Backup protetto', 'Scrivi la password del backup'); if (!pw) throw new Error('annullato');
+      try { const k = await this.derive(pw, this.u8(j.salt)), pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: this.u8(j.iv) }, k, this.u8(j.ct)); j = JSON.parse(new TextDecoder().decode(pt)); } catch (_) { throw new Error('password sbagliata'); } }
+    if (!j || j.app !== 'pitwall') throw new Error('non è un backup di Orbita'); return j; },
+  /* ---- Google Drive ---- */
+  async folder(a) { if (a._bkf) return a._bkf; const q = encodeURIComponent(`name='${this.FOLDER}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+    const l = await (await Accts.raw(a, `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&spaces=drive`)).json(); if (l.files && l.files[0]) return a._bkf = l.files[0].id;
+    const f = await (await Accts.raw(a, 'https://www.googleapis.com/drive/v3/files?fields=id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.FOLDER, mimeType: 'application/vnd.google-apps.folder' }) })).json(); return a._bkf = f.id; },
+  async driveList(a) { const fid = await this.folder(a), q = encodeURIComponent(`'${fid}' in parents and trashed=false`);
+    const l = await (await Accts.raw(a, `https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=createdTime desc&fields=files(id,name,size,createdTime)&pageSize=50`)).json();
+    return (l.files || []).map(f => ({ key: f.id, at: Date.parse(f.createdTime), size: +f.size || 0, enc: /protetto/.test(f.name), where: 'drive', name: f.name })); },
+  async drivePut(a, name, text) { const fid = await this.folder(a), b = 'orbita' + Math.random().toString(36).slice(2);
+    const body = new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name, parents: [fid] })}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n`, text, `\r\n--${b}--`]);
+    await Accts.raw(a, 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + b }, body });
+    const all = await this.driveList(a); for (const f of all.slice(this.MAXD)) await Accts.raw(a, `https://www.googleapis.com/drive/v3/files/${f.key}`, { method: 'DELETE' }).catch(() => {}); },
+  async driveGet(a, id) { return (await Accts.raw(a, `https://www.googleapis.com/drive/v3/files/${id}?alt=media`)).text(); },
+  /* ---- making one ---- */
+  busy: false,
+  async run(why = 'auto') {
+    if (this.busy) return null; this.busy = true;
+    try { await Store.heavyReady; const obj = BK.obj(); obj.why = why; const plain = JSON.stringify(obj), { text, enc } = await this.seal(plain), at = Date.now(), key = new Date(at).toISOString();
+      await this.tx('b', 'readwrite', s => s.put({ at, size: text.length, enc, why, data: text }, key));
+      const L = await this.localList(); for (const x of L.slice(this.MAXL)) await this.tx('b', 'readwrite', s => s.delete(x.key));
+      let drive = false; const a = why !== 'before-restore' && this.drive();
+      if (a) try { await this.drivePut(a, `Orbita ${todayK()} ${new Date(at).toTimeString().slice(0, 5).replace(':', '.')}${enc ? ' (protetto)' : ''}.json`, text); drive = true; } catch (e) { this.err = e && e.status === 403 ? 'Drive non dà il permesso di scrivere: ricollega l\'account con Drive' : 'Drive non raggiungibile'; }
+      if (why !== 'before-restore') { try { localStorage.setItem(this.LK, String(at)); } catch (_) {} if (drive) this.err = ''; }
+      return { at, size: text.length, enc, drive };
+    } finally { this.busy = false; } },
+  tick() { if (!this.due() || document.hidden) return; const go = () => this.run('auto').then(r => { if (r && this.cfg().quiet !== true && UI.view === 'settings') App.render(); }).catch(() => {}); (window.requestIdleCallback || setTimeout)(go, { timeout: 20000 }); },
+  /* ---- putting back only what you choose ---- */
+  restore(j, label) {
+    const XL = { music: 'Musica', aikeys: 'Chiavi IA', hours: 'Ore lavorate', focuslog: 'Sessioni di focus', anns: 'Annotazioni PDF', places: 'Luoghi', lingo: 'Lingue', apps: 'Candidature', debts: 'Debiti e crediti', diet: 'Alimentazione', moves: 'Traslochi', exkit: 'Kit esame', wraps: 'Riepiloghi' };
+    const lbl = k => BK.LBL[k] || XL[k] || (k[0].toUpperCase() + k.slice(1));
+    const keys = BK.keys().filter(k => j[k] != null && k !== 'anns' && k !== 'dtx' && BK.count(j[k]) > 0).sort((a, b) => (a === 'profile') - (b === 'profile') || lbl(a).localeCompare(lbl(b), 'it')), cnt = k => BK.count(j[k]), noteL = Object.values(j.notes || {}), boardL = Object.values(j.boards || {});
+    const sh = openSheet({ title: 'Ripristina dal backup', wide: true, left: { label: 'Annulla' }, right: { label: 'Ripristina', act: async s => {
+        const el = s.el, pick = $$('[data-rk]:checked', el).map(x => x.dataset.rk), notes = $$('[data-rn]:checked', el).map(x => x.dataset.rn), boards = $$('[data-rb]:checked', el).map(x => x.dataset.rb), mode = $('[data-seg="rmode"][aria-pressed="true"]', el)?.dataset.v || 'add';
+        if (!pick.length && !notes.length && !boards.length) { Island.toast({ icon: 'x', c: 'var(--orange)', t: 'Scegli almeno una cosa', ms: 1800 }); return; }
+        await this.run('before-restore').catch(() => {});
+        let n = 0; for (const k of pick) { const cur = S[k], v = JSON.parse(JSON.stringify(j[k]));
+          if (mode === 'replace' || cur == null) Store.apply(k, v); else Store.apply(k, Merge.run(undefined, JSON.parse(JSON.stringify(cur)), v, 'l', { c: [] }));
+          save(k); n++; }
+        for (const id of notes) { if (mode === 'replace' || !S.notes[id]) { S.notes[id] = JSON.parse(JSON.stringify(j.notes[id])); save('note-' + id); n++; } }
+        for (const id of boards) { if (mode === 'replace' || !S.boards[id]) { S.boards[id] = JSON.parse(JSON.stringify(j.boards[id])); save('board-' + id); n++; } }
+        s.close(); App.render(); Island.toast({ icon: 'check', c: 'var(--green)', t: 'Ripristinato', s: `${n} ${n === 1 ? 'parte' : 'parti'} · prima ho salvato una copia di com'era`, ms: 3200 }); } },
+      body: `<p class="muted" style="margin:0;font-size:14px">${esc(label)}</p>
+        <div class="field"><span class="lbl">Come</span>${seg('rmode', [['add', 'Aggiungi quello che manca'], ['replace', 'Sostituisci']], 'add')}</div>
+        <p class="muted" style="margin:-4px 0 0;font-size:12.5px">«Aggiungi» rimette le cose cancellate e non tocca quelle che hai adesso. «Sostituisci» riporta le parti scelte esattamente com'erano. Prima di ripristinare salvo comunque una copia di com'è ora.</p>
+        <div class="list">${keys.filter(k => k !== 'notes' && k !== 'boards').map(k => `<label class="row"><input type="checkbox" data-rk="${k}"><span class="grow t">${esc(lbl(k))}</span><span class="muted">${cnt(k)}</span></label>`).join('')}</div>
+        ${noteL.length ? `<details class="lic"><summary><span class="grow"><b>Note</b> <span class="muted">${noteL.length}</span><div class="s">Scegli quali</div></span></summary><div class="lic-b"><button class="btn sm plain" data-all="rn">Tutte</button>${noteL.sort((a, b) => (b.updated || 0) - (a.updated || 0)).map(n => `<label class="row" style="padding:6px 0"><input type="checkbox" data-rn="${esc(n.id)}"><span class="grow">${esc(n.title || 'Senza titolo')}${S.notes[n.id] ? '' : ' <span class="muted">· non c\'è più</span>'}</span></label>`).join('')}</div></details>` : ''}
+        ${boardL.length ? `<details class="lic"><summary><span class="grow"><b>Quaderni e lavagne</b> <span class="muted">${boardL.length}</span><div class="s">Scegli quali</div></span></summary><div class="lic-b"><button class="btn sm plain" data-all="rb">Tutti</button>${boardL.map(b => `<label class="row" style="padding:6px 0"><input type="checkbox" data-rb="${esc(b.id)}"><span class="grow">${esc(b.title || 'Lavagna')}${S.boards[b.id] ? '' : ' <span class="muted">· non c\'è più</span>'}</span></label>`).join('')}</div></details>` : ''}`,
+      onMount(el) { wireSeg(el, 'rmode', () => {}); $$('[data-all]', el).forEach(b => b.onclick = e => { e.preventDefault(); const k = b.dataset.all; const all = $$(`[data-${k}]`, el); const on = all.some(x => !x.checked); all.forEach(x => x.checked = on); }); } });
+    return sh; },
+  async openOne(x, a) { try { const text = x.where === 'drive' ? await this.driveGet(a, x.key) : (await this.localGet(x.key) || {}).data; if (!text) throw new Error('vuoto'); const j = await this.open(text);
+      this.restore(j, `Backup del ${new Date(x.at).toLocaleString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}${x.where === 'drive' ? ' · Google Drive' : ' · su questo dispositivo'}`); }
+    catch (e) { if (e && e.message === 'annullato') return; Island.toast({ icon: 'x', c: 'var(--red)', t: 'Non riesco ad aprire il backup', s: (e && e.message) || '', ms: 3200 }); } },
+};
+setTimeout(() => AutoBk.tick(), 45000); setInterval(() => AutoBk.tick(), 3600e3); document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(() => AutoBk.tick(), 8000); });
+ACT.autoBk = async () => {
+  const C = AutoBk.cfg(), a = AutoBk.drive(), L = await AutoBk.localList(); let D = []; if (a) D = await AutoBk.driveList(a).catch(() => []);
+  const when = t => new Date(t).toLocaleString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const row = (x, i) => `<div class="row"><span class="tile-ico" style="background:${x.where === 'drive' ? '#34A853' : 'var(--gray)'}">${ico(x.where === 'drive' ? 'cloud' : 'folder')}</span><span class="grow"><div class="t">${when(x.at)}${x.enc ? ' 🔒' : ''}</div><div class="s">${x.where === 'drive' ? 'Google Drive' : 'Questo dispositivo'} · ${fmtSize(x.size)}${x.why === 'before-restore' ? ' · prima di un ripristino' : ''}</div></span><button class="btn sm" data-bko="${x.where}:${i}">Apri…</button></div>`;
+  const sh = openSheet({ title: 'Backup automatico', wide: true, left: { label: 'Chiudi' }, body: `
+    ${AutoBk.desk() ? `<p class="muted" style="margin:0">Su questo computer ci pensa già il programma: una copia ogni giorno nella cartella che hai scelto (Impostazioni › Backup del computer). Qui sotto puoi comunque fare un backup subito o ripristinarne uno.</p>` : ''}
+    <div class="field"><span class="lbl">Ogni quanto</span>${seg('bkev', [['day', 'Ogni giorno'], ['week', 'Ogni settimana'], ['off', 'Mai']], C.every)}</div>
+    <div class="list"><div class="row"><span class="tile-ico" style="background:${a ? '#34A853' : 'var(--orange)'}">${ico(a ? 'cloud' : 'folder')}</span><span class="grow"><div class="t">${a ? 'Google Drive, cartella «Orbita backup»' : 'Solo su questo dispositivo'}</div><div class="s">${a ? `Account ${esc(a.email || a.label || 'Google')} · tengo gli ultimi ${AutoBk.MAXD}, più ${AutoBk.MAXL} su questo dispositivo` : `Tengo gli ultimi ${AutoBk.MAXL}. Collega Google Drive in Account per avere anche una copia fuori dal dispositivo.`}</div>${AutoBk.err ? `<div class="s" style="color:var(--red)">${esc(AutoBk.err)}</div>` : ''}</span></div>
+      <div class="row"><span class="grow"><div class="t">🔒 Proteggi con una password</div><div class="s">${C.lock ? 'Attiva: senza password i backup non si leggono. Se la dimentichi non si recuperano.' : 'Consigliata se usi Drive'}</div></span>${toggleBtn('bkLock', C.lock)}</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="bkNow">${ico('download', 'sm')}Fai un backup adesso</button><button class="btn" id="bkFile">${ico('upload', 'sm')}Ripristina da un file…</button></div>
+    <p class="muted" style="margin:0;font-size:13px">${AutoBk.last() ? 'Ultimo automatico: ' + when(AutoBk.last()) : 'Ancora nessun backup automatico su questo dispositivo.'}</p>
+    ${D.length ? `<div class="section-h" style="margin:4px 0 0">Su Google Drive</div><div class="list">${D.map(row).join('')}</div>` : ''}
+    ${L.length ? `<div class="section-h" style="margin:4px 0 0">Su questo dispositivo</div><div class="list">${L.map(row).join('')}</div>` : ''}
+    <input type="file" id="bkPick" accept=".json,.zip,application/json,application/zip" hidden>`,
+    onMount(el, api) {
+      wireSeg(el, 'bkev', v => AutoBk.set('every', v));
+      wireToggle($('#bkLock', el), async on => { if (on) { const p1 = await askPw('Password dei backup', 'Scegline una che ricordi: senza, i backup protetti non si possono aprire'); if (!p1 || p1.length < 6) { Island.toast({ icon: 'x', c: 'var(--orange)', t: 'Almeno 6 caratteri', ms: 1800 }); $('#bkLock', el).setAttribute('aria-pressed', 'false'); return; } await AutoBk.lock(p1); Island.toast({ icon: 'check', c: 'var(--green)', t: 'I prossimi backup saranno protetti', ms: 2200 }); } else { await AutoBk.lock(null); } });
+      $('#bkNow', el).onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = 'Salvo…'; const r = await AutoBk.run('manual').catch(() => null); api.close(); Island.toast(r ? { icon: 'check', c: 'var(--green)', t: 'Backup fatto', s: `${fmtSize(r.size)}${r.drive ? ' · anche su Google Drive' : ''}${r.enc ? ' · protetto' : ''}`, ms: 2600 } : { icon: 'x', c: 'var(--red)', t: 'Backup non riuscito', ms: 2600 }); };
+      $('#bkFile', el).onclick = () => $('#bkPick', el).click();
+      $('#bkPick', el).onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const j = /\.zip$/i.test(f.name) ? (await BK.readZip(f)).j : await AutoBk.open(await f.text()); api.close(); AutoBk.restore(j, f.name); } catch (er) { if (er && er.message === 'annullato') return; Island.toast({ icon: 'x', c: 'var(--red)', t: 'File non valido', s: (er && er.message) || '', ms: 3000 }); } };
+      $$('[data-bko]', el).forEach(b => b.onclick = () => { const [w, i] = b.dataset.bko.split(':'); const x = (w === 'drive' ? D : L)[+i]; api.close(); AutoBk.openOne(x, a); });
+    } });
+  return sh;
+};
+
+/* =========================================================================
+   xp4_leave — Orbita personale: "Esci adesso"
+   For every appointment of today and tomorrow that has a place, Orbita
+   works out how long it takes to get there — from where you are now when
+   it knows (position of the last 45 minutes), otherwise from home — and
+   warns you twice: 10 minutes before you have to leave and when it's time.
+   The warnings go through the normal notifications (also with Orbita closed,
+   when push notifications are on), and move by themselves when the time
+   changes: you moved, the traffic of the rush hour, a different way to go.
+   In the last 3 hours before an appointment the route is checked again
+   every 10 minutes. Today shows the next departure.
+   ========================================================================= */
+const Leave = {
+  K: 'orbita.leave', C: {}, busy: {},
+  P() { return { on: true, margin: 5, by: S.profile.goBy || 'auto', ...(S.profile.leave || {}) }; },
+  set(k, v) { S.profile.leave = { ...this.P(), [k]: v }; save('profile'); this.refresh(true); },
+  load() { try { this.C = JSON.parse(localStorage.getItem(this.K) || '{}') || {}; } catch (_) { this.C = {}; } },
+  keep() { const old = Date.now() - 2 * 864e5; for (const [k, v] of Object.entries(this.C)) if (!v || v.st < old) delete this.C[k]; try { localStorage.setItem(this.K, JSON.stringify(this.C)); } catch (_) {} },
+  /** appointments with a place, in the next `hours` */
+  list(hours = 36) { const now = Date.now(), out = [];
+    for (let d = 0; d <= 1; d++) { const k = addDK(todayK(), d);
+      for (const it of itemsOn(k)) { if (it.allDay || !it.s || !it.loc || !String(it.loc).trim()) continue; const ev = it.ev || {}; if (ev.leg || ev.trip || ev.plan || ev.noLeave) continue;
+        if (/^(online|teams|zoom|meet|google meet|skype|da remoto|remoto|casa)$/i.test(String(it.loc).trim()) || /^https?:\/\//i.test(String(it.loc).trim())) continue;
+        const st = new Date(`${k}T${it.s}:00`).getTime(); if (st < now + 5 * 60e3 || st > now + hours * 3600e3) continue;
+        out.push({ key: `${it.kind}:${it.id}:${k}:${it.s}`, id: it.id, k, s: it.s, st, title: it.title, loc: String(it.loc).trim(), by: ev.goBy || this.P().by }); } }
+    return out.sort((a, b) => a.st - b.st); },
+  async origin() { const L = typeof Here !== 'undefined' ? Here.last() : null;
+    if (L && L.lat != null && Date.now() - (L.at || 0) < 45 * 60e3 && (L.src === 'gps' || (L.acc || 0) < 3000)) return { lat: L.lat, lng: L.lng, q: 'Posizione attuale', src: 'here' };
+    const H = await Route.homeGeo().catch(() => null); return H ? { ...H, src: 'home' } : null; },
+  /** the route for one appointment, kept until it gets old or you move */
+  async calc(o, O, force) { const c = this.C[o.key], near = o.st - Date.now() < 3 * 3600e3;
+    const moved = c && O && c.o && Route.km(c.o, O) > .3, stale = c && Date.now() - c.at > (near ? 10 : 120) * 60e3;
+    if (c && !force && !moved && !stale && c.by === o.by) return c;
+    if (this.busy[o.key]) return c || null; this.busy[o.key] = 1;
+    try { const r = await Route.trip(O, o.loc, o.by, new Date(o.st)); const v = r ? { min: r.min, km: r.km, by: r.by, rush: r.rush, est: r.est, from: O.src, o: { lat: O.lat, lng: O.lng }, b: r.b, a: r.a, at: Date.now(), st: o.st, there: r.km < .3 } : { none: true, at: Date.now(), st: o.st, by: o.by };
+      this.C[o.key] = v; this.keep(); return v; } catch (_) { return c || null; } finally { delete this.busy[o.key]; } },
+  when(o, c) { if (!c || c.none || c.there) return null; return o.st - (c.min + this.P().margin) * 60e3; },
+  running: false,
+  async refresh(force) { if (IN_CLAUDE || !this.P().on) return; if (this.running) { this.again = this.again || (force ? 'f' : 'n'); return; } this.running = true;
+    try { const L = this.list(), O = await this.origin(); if (!O) return; let changed = false;
+      for (const o of L) { const before = JSON.stringify(this.C[o.key] && [this.C[o.key].min, this.C[o.key].from]); const c = await this.calc(o, O, force); if (JSON.stringify(c && [c.min, c.from]) !== before) changed = true; }
+      if (changed) { try { Alerts.sync(); } catch (_) {} if (UI.view === 'today') App.refresh(); } }
+    finally { this.running = false; if (this.again) { const f = this.again === 'f'; this.again = null; setTimeout(() => this.refresh(f), 50); } } },
+  /** the next departure, for Today */
+  next() { const now = Date.now(); for (const o of this.list(24)) { const c = this.C[o.key], at = this.when(o, c); if (at && at > now - 15 * 60e3) return { o, c, at }; } return null; },
+  say(c) { const G = GOBY[c.by] || GOBY.auto; return `${G[1]} ${c.min} min ${G[0].toLowerCase()}${c.km ? ' · ' + String(c.km).replace('.', ',') + ' km' : ''}${c.rush ? ' · ora di punta' : ''}${c.from === 'here' ? ' · da dove sei' : ' · da casa'}`; },
+};
+Leave.load();
+/* the two warnings, inside the normal alert list (so they also reach the push queue) */
+{ const old = Alerts.list.bind(Alerts); Alerts.list = function (hours = 48) { const out = old(hours), now = Date.now(), P = Leave.P();
+    if (P.on) for (const o of Leave.list(Math.min(hours, 36))) { const c = Leave.C[o.key], at = Leave.when(o, c); if (!at) continue; const m5 = Math.round(at / 3e5), arr = m2hm(hm2m(o.s) - P.margin);
+      const G = GOBY[c.by] || GOBY.auto, body = `${o.title} alle ${o.s} · ${G[1]} ${c.min} min${c.rush ? ' (ora di punta)' : ''} · arrivi verso le ${arr}`;
+      const add = a => { if (!this.fired[a.key] && a.at >= now - 10 * 60e3 && a.at <= now + hours * 36e5) out.push(a); };
+      add({ key: `lv10:${o.key}:${m5}`, at: at - 10 * 60e3, title: `${G[1]} Tra 10 minuti esci`, body, view: 'today', ev: o.id, k: o.k });
+      add({ key: `lv0:${o.key}:${m5}`, at, title: `${G[1]} Esci adesso`, body, view: 'today', ev: o.id, k: o.k }); }
+    return out.sort((x, y) => x.at - y.at); }; }
+/* Today: the next departure, with the map link */
+{ const oR = VIEWS.today.render; VIEWS.today.render = function () { const h = oR.call(this), N = Leave.P().on ? Leave.next() : null; if (!N) return h;
+    const { o, c, at } = N, mins = Math.round((at - Date.now()) / 60e3), G = GOBY[c.by] || GOBY.auto, url = c.a && c.b ? Route.link({ ...c, a: { ...c.a, q: c.from === 'here' ? '' : c.a.q }, by: c.by }) : '';
+    const card = `<section class="card span-12 lv-card${mins <= 10 ? ' now' : ''}"><span class="lv-em">${G[1]}</span><span class="grow" style="min-width:0"><div class="lv-t">${mins <= 0 ? 'Esci adesso' : mins < 60 ? `Esci tra ${mins} min` : `Esci alle ${m2hm(new Date(at).getHours() * 60 + new Date(at).getMinutes())}`}</div><div class="lv-s">${esc(o.title)} alle ${o.s} · ${esc(o.loc)}</div><div class="lv-s">${esc(Leave.say(c))}${c.est ? ' · stima' : ''}</div></span>${url ? `<a class="btn sm primary" href="${esc(url)}" target="_blank" rel="noopener">Indicazioni</a>` : ''}</section>`;
+    const g = h.indexOf('grid dash">'); if (g >= 0) { const i = g + 'grid dash">'.length; return h.slice(0, i) + card + h.slice(i); } return card + h; }; }
+/* keep it fresh: at start, every 10 minutes, when you come back to Orbita, when the agenda or the position change */
+setTimeout(() => Leave.refresh(), 6000); setInterval(() => Leave.refresh(), 10 * 60e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(() => Leave.refresh(), 2500); });
+{ const oT = Store.touch.bind(Store); Store.touch = function (id, d) { const r = oT(id, d); if (id === 'events' || id === 'profile') { clearTimeout(Leave.tt); Leave.tt = setTimeout(() => Leave.refresh(), 4000); } return r; }; }
+ACT.leaveSet = () => { const P = Leave.P();
+  openSheet({ title: 'Esci adesso', left: { label: 'Chiudi' }, body: `<p class="muted" style="margin:0;font-size:14px">Per gli impegni con un luogo calcolo il viaggio da dove sei (o da casa) e ti avviso 10 minuti prima di uscire e quando è ora. Se ti sposti o cambia il traffico, l'avviso si sposta da solo.</p>
+    <div class="list"><div class="row"><span class="grow t">Avvisi per uscire</span>${toggleBtn('lvOn', P.on)}</div></div>
+    <div class="field"><span class="lbl">Di solito ci vai</span>${seg('lvBy', Object.entries(GOBY).map(([k, v]) => [k, v[1] + ' ' + v[0].replace(/^(In|A|Coi) /, '')]), P.by)}</div>
+    <div class="field"><span class="lbl">Arriva con un margine di</span>${seg('lvM', [[0, 'Niente'], [5, '5 min'], [10, '10 min'], [15, '15 min']], P.margin)}</div>
+    <p class="muted" style="margin:0;font-size:12.5px">${Route.home() ? 'Casa: ' + esc(Route.home().addr || 'impostata') : 'Imposta l\'indirizzo di casa in Impostazioni › Posizione, così funziona anche quando non so dove sei.'}</p>`,
+    onMount(el) { wireToggle($('#lvOn', el), v => Leave.set('on', v)); wireSeg(el, 'lvBy', v => Leave.set('by', v)); wireSeg(el, 'lvM', v => Leave.set('margin', +v)); } }); };
+/* look */
+{ const st = document.createElement('style'); st.textContent = `.lv-card{display:flex;align-items:center;gap:14px;padding:14px 16px}.lv-card .lv-em{font-size:30px;line-height:1}.lv-card>.grow{flex:1}.lv-card .lv-t{font:700 19px/1.2 var(--f-round,inherit);letter-spacing:-.01em}.lv-card .lv-s{color:var(--label2,#8e8e93);font-size:13.5px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lv-card.now{box-shadow:0 0 0 2px var(--orange,#FF9500) inset}.lv-card.now .lv-t{color:var(--orange,#FF9500)}`; document.head.appendChild(st); }
+
+/* =========================================================================
+   xp5_plan — Orbita personale: replanning, a stronger assistant, the month
+   · Ripianifica: the reminders left behind no longer all land on today.
+     They are spread over the next 7 days, into the free slots between your
+     appointments (within your working hours), most important and oldest
+     first, never more than N per day. Preview first; or automatically each
+     morning, with "Annulla" right in the notification.
+   · Assistant: new actions, so one sentence can do several things —
+     search, move a reminder, shift a whole day (events and reminders) to
+     another day, delete (recoverable from the Trash), a reminder
+     at a precise time, and the replanning above.
+   · Il tuo mese: a page "Cosa ha funzionato" that crosses sleep, sport,
+     steps, focus and mood over that month ("with 7+ hours of sleep you
+     studied 32% more").
+   · Impostazioni › Orbita personale: all of these in one place.
+   ========================================================================= */
+const Replan = {
+  UK: 'orbita.replan.undo', DK: 'orbita.replan.day',
+  P() { return { auto: false, cap: 4, days: 7, ...(S.profile.replan || {}) }; },
+  set(k, v) { S.profile.replan = { ...this.P(), [k]: v }; save('profile'); },
+  late() { const t = todayK(), nowM = new Date().getHours() * 60 + new Date().getMinutes();
+    return S.tasks.filter(x => !x.done && x.due && (x.due < t || (x.due === t && x.time && hm2m(x.time) + (+x.est || 30) < nowM - 30))); },
+  /** → [{x, k, at}] without touching anything */
+  plan(list = this.late()) { const P = this.P(), B = Brief.P(), used = {}, count = {}, out = [];
+    const L = list.slice().sort((a, b) => (b.prio || 0) - (a.prio || 0) || (a.due || '').localeCompare(b.due || '') || (a.created || 0) - (b.created || 0));
+    const days = []; for (let i = 0; i < P.days; i++) days.push(addDK(todayK(), i));
+    for (const k of days) count[k] = S.tasks.filter(x => !x.done && x.due === k && !L.includes(x)).length;
+    for (const x of L) { const est = Math.max(15, +x.est || 30); let put = null;
+      for (const k of days) { if (count[k] >= P.cap) continue; const sl = freeSlots(k, B.from, B.to, used[k] || []).find(([a, b]) => b - a >= est); if (!sl) continue; const a = Math.ceil(sl[0] / 15) * 15; if (a + est > sl[1]) continue; put = { x, k, at: m2hm(a), est }; (used[k] ||= []).push([a - 5, a + est + 5]); count[k]++; break; }
+      out.push(put || { x, k: days[days.length - 1], at: null, est, full: true }); }
+    return out; },
+  apply(R, why) { const undo = R.map(r => ({ id: r.x.id, due: r.x.due, time: r.x.time || null }));
+    try { localStorage.setItem(this.UK, JSON.stringify({ at: Date.now(), why, undo })); } catch (_) {}
+    for (const r of R) { r.x.due = r.k; if (r.at) { r.x.time = r.at; r.x.est = r.est; } else delete r.x.time; }
+    save('tasks'); App.refresh(); },
+  undo() { let u = null; try { u = JSON.parse(localStorage.getItem(this.UK) || 'null'); } catch (_) {} if (!u) return 0; let n = 0;
+    for (const b of u.undo) { const x = S.tasks.find(t => t.id === b.id); if (!x) continue; x.due = b.due; if (b.time) x.time = b.time; else delete x.time; n++; }
+    try { localStorage.removeItem(this.UK); } catch (_) {} save('tasks'); App.refresh(); return n; },
+  sheet() { const R = this.plan(); if (!R.length) { Island.toast({ icon: 'check', c: 'var(--green)', t: 'Niente da ripianificare', s: 'Nessun promemoria rimasto indietro', ms: 2200 }); return; }
+    const on = R.map(() => true), B = Brief.P();
+    openSheet({ title: 'Ripianifica', wide: true, left: { label: 'Annulla' }, right: { label: 'Conferma', act: s => { const pick = R.filter((_, i) => on[i]); this.apply(pick, 'manual'); s.close(); Island.toast({ icon: 'cal', c: 'var(--accent)', t: `${pick.length} promemoria ripianificati`, s: 'Negli spazi liberi dei prossimi giorni', ms: 3000, action: { label: 'Annulla', fn: () => this.undo() } }); } },
+      body: `<p class="muted" style="margin:0;font-size:14px">Li distribuisco nei prossimi ${this.P().days} giorni, negli spazi liberi tra ${B.from} e ${B.to} attorno agli impegni, prima i più importanti e i più vecchi, al massimo ${this.P().cap} al giorno.</p><div id="rpL"></div>`,
+      onMount(el) { const paint = () => { const by = {}; R.forEach((r, i) => (by[r.k] ||= []).push([r, i]));
+          $('#rpL', el).innerHTML = Object.keys(by).sort().map(k => `<div class="section-h" style="margin:10px 0 6px">${esc(cap(relDay(k, true)))}</div><div class="list">${by[k].map(([r, i]) => `<div class="row"><button class="check ${on[i] ? 'on' : ''}" data-rp="${i}" aria-label="Includi"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7"/></svg></button><span class="tnum" style="width:48px;color:var(--accent);font-weight:600">${r.at || '—'}</span><span class="grow" style="min-width:0"><div class="t">${r.x.prio ? `<span class="prio">${'!'.repeat(r.x.prio)}</span> ` : ''}${esc(r.x.title)}</div><div class="s">era per ${esc(relDay(r.x.due, true))}${r.full ? ' · nessuno spazio libero: solo la data' : ` · ${r.est} min`}</div></span></div>`).join('')}</div>`).join('');
+          $$('[data-rp]', el).forEach(b => b.onclick = () => { on[+b.dataset.rp] = !on[+b.dataset.rp]; paint(); }); }; paint(); } }); },
+  /** once a day, in the morning, if you asked for it */
+  auto() { if (!this.P().auto || IN_CLAUDE) return; const h = new Date().getHours(); if (h < 6) return; let d = ''; try { d = localStorage.getItem(this.DK) || ''; } catch (_) {} if (d === todayK()) return;
+    try { localStorage.setItem(this.DK, todayK()); } catch (_) {} const R = this.plan().filter(r => !r.full); if (!R.length) return; this.apply(R, 'auto');
+    Island.toast({ icon: 'cal', c: 'var(--accent)', t: `Ho ripianificato ${R.length} promemoria rimasti indietro`, s: 'Sono negli spazi liberi dei prossimi giorni', ms: 6000, action: { label: 'Annulla', fn: () => { const n = this.undo(); Island.toast({ icon: 'refresh', t: `Rimessi come prima (${n})`, ms: 1800 }); } } }); },
+};
+ACT.replan = () => Replan.sheet();
+setTimeout(() => Replan.auto(), 9000); document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(() => Replan.auto(), 3000); });
+/* the "Da riprogrammare" card gets the smart way next to the quick ones */
+{ const oL = TODAY_EXTRA.late; if (oL) TODAY_EXTRA.late = () => { const h = oL(); return h ? h.replace('<button class="btn sm primary" data-act="lateToday">Tutti a oggi</button>', '<button class="btn sm primary" data-act="replan">✨ Distribuisci</button><button class="btn sm" data-act="lateToday">Tutti a oggi</button>') : h; }; }
+
+/* ---------- the assistant: more things it can do in one go ---------- */
+Promise.resolve().then(() => { const oT = Assistant.tools.bind(Assistant); Assistant.tools = function () { const L = oT(), self = this;
+    const okDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null, okTime = v => /^\d{1,2}:\d{2}$/.test(String(v || '')) ? String(v).padStart(5, '0') : null;
+    const findTask = id => { const t = S.tasks.find(x => x.id === String(id)); if (!t) throw new Error('promemoria non trovato: usa search_items per l\'id'); return t; };
+    L.push(
+      { name: 'search_items', description: 'Cerca eventi e promemoria per testo e/o per intervallo di date. Restituisce id, tipo, titolo, data e ora. Usala prima di spostare o eliminare cose che non hanno l\'id nel contesto.', inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'parole da cercare nel titolo, facoltativo' }, from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' }, kind: { type: 'string', enum: ['events', 'tasks', 'all'] } } },
+        execute(i) { const q = String(i.query || '').toLowerCase().trim(), a = okDate(i.from) || todayK(), b = okDate(i.to) || addDK(a, 30), kind = i.kind || 'all', out = [], m = t => !q || String(t || '').toLowerCase().includes(q);
+          if (kind !== 'tasks') for (let k = a; k <= b && out.length < 60; k = addDK(k, 1)) for (const it of itemsOn(k)) if (it.kind === 'event' && m(it.title)) out.push({ type: 'evento', id: it.id, title: it.title, date: k, start: it.s || null, end: it.e || null, recurring: !!(it.ev && it.ev.rec && it.ev.rec !== 'none') });
+          if (kind !== 'events') for (const t of S.tasks) if (!t.done && m(t.title) && (!i.from && !i.to ? true : t.due && t.due >= a && t.due <= b)) out.push({ type: 'promemoria', id: t.id, title: t.title, due: t.due || null, time: t.time || null, priority: t.prio || 0 });
+          return { count: out.length, items: out.slice(0, 60) }; } },
+      { name: 'move_task', description: 'Cambia data e/o ora (o il titolo) di un promemoria esistente.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, due: { type: 'string', description: 'YYYY-MM-DD' }, time: { type: 'string', description: 'HH:MM, oppure "none" per togliere l\'ora' }, title: { type: 'string' } }, required: ['id'] },
+        execute(i) { const t = findTask(i.id); if (okDate(i.due)) t.due = i.due; if (i.time === 'none') delete t.time; else if (okTime(i.time)) t.time = okTime(i.time); if (i.title) t.title = String(i.title); save('tasks'); self.note('list', `Spostato: ${t.title}${t.due ? ' · ' + relDay(t.due, true) : ''}${t.time ? ' ' + t.time : ''}`); return { ok: true }; } },
+      { name: 'add_reminder_at', description: 'Crea un promemoria con data e ora precise: arriva la notifica a quell\'ora ("ricordami alle 8 di…").', inputSchema: { type: 'object', properties: { title: { type: 'string' }, date: { type: 'string', description: 'YYYY-MM-DD' }, time: { type: 'string', description: 'HH:MM' }, priority: { type: 'integer', minimum: 0, maximum: 3 } }, required: ['title', 'date', 'time'] },
+        execute(i) { const d = okDate(i.date), tm = okTime(i.time); if (!d || !tm) throw new Error('data o ora non valide'); const t = { id: uid(), title: String(i.title), due: d, time: tm, prio: clamp(+i.priority || 0, 0, 3), done: false, created: Date.now() }; S.tasks.push(t); save('tasks'); self.note('clock', `Ti avviso ${relDay(d, true).toLowerCase()} alle ${tm}: ${t.title}`); return { ok: true, id: t.id }; } },
+      { name: 'shift_day', description: 'Sposta in blocco a un altro giorno gli impegni e/o i promemoria di un giorno, tenendo gli stessi orari. Si può limitare con un filtro sul titolo o sulla categoria (es. tutto lo studio). Per gli eventi ripetuti sposta solo quella volta.', inputSchema: { type: 'object', properties: { from_date: { type: 'string', description: 'YYYY-MM-DD' }, to_date: { type: 'string', description: 'YYYY-MM-DD' }, what: { type: 'string', enum: ['events', 'tasks', 'all'] }, query: { type: 'string', description: 'parole nel titolo, facoltativo' }, category: { type: 'string', enum: CAT_KEYS } }, required: ['from_date', 'to_date'] },
+        execute(i) { const a = okDate(i.from_date), b = okDate(i.to_date); if (!a || !b) throw new Error('date non valide'); const q = String(i.query || '').toLowerCase(), what = i.what || 'all', ok = (title, cat) => (!q || String(title || '').toLowerCase().includes(q)) && (!i.category || cat === i.category); let ne = 0, nt = 0;
+          if (what !== 'tasks') { for (const it of itemsOn(a)) { if (it.kind !== 'event' || !ok(it.title, it.cat)) continue; const ev = S.events.find(e => e.id === it.id); if (!ev) continue;
+              if (ev.rec && ev.rec !== 'none') { (ev.skip ||= []).push(a); S.events.push({ ...JSON.parse(JSON.stringify(ev)), id: uid(), date: b, rec: 'none', until: undefined, skip: undefined, endDate: undefined, created: Date.now() }); }
+              else { const span = ev.endDate ? dayDiff(ev.date, ev.endDate) : 0; ev.date = b; if (span) ev.endDate = addDK(b, span); } ne++; } if (ne) save('events'); }
+          if (what !== 'events') { for (const t of S.tasks) if (!t.done && t.due === a && ok(t.title, t.cat)) { t.due = b; nt++; } if (nt) save('tasks'); }
+          self.note('cal', `Da ${relDay(a, true).toLowerCase()} a ${relDay(b, true).toLowerCase()}: ${ne} impegni, ${nt} promemoria`); return { ok: true, events: ne, tasks: nt }; } },
+      { name: 'delete_items', description: 'Elimina eventi o promemoria per id (restano recuperabili dal Cestino per 30 giorni). Usala solo se l\'utente chiede di eliminare.', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } }, required: ['ids'] },
+        execute(i) { const ids = new Set((i.ids || []).map(String)); const e0 = S.events.length, t0 = S.tasks.length; S.events = S.events.filter(e => !ids.has(e.id)); S.tasks = S.tasks.filter(t => !ids.has(t.id)); const ne = e0 - S.events.length, nt = t0 - S.tasks.length; if (ne) save('events'); if (nt) save('tasks'); self.note('trash', `Eliminati ${ne + nt} elementi · recuperabili dal Cestino`); return { ok: true, deleted: ne + nt }; } },
+      { name: 'replan_late', description: 'Ridistribuisce i promemoria scaduti nei prossimi giorni, negli spazi liberi tra gli impegni. Restituisce cosa è stato spostato.', inputSchema: { type: 'object', properties: {} },
+        execute() { const R = Replan.plan(); if (!R.length) return { ok: true, moved: 0 }; Replan.apply(R, 'assistant'); self.note('cal', `Ripianificati ${R.length} promemoria`); return { ok: true, moved: R.map(r => ({ title: r.x.title, date: r.k, time: r.at })) }; } },
+    );
+    return L; }; });
+
+/* ---------- Il tuo mese: what worked ---------- */
+const WrapX = {
+  rows(a, b) { const out = []; for (let k = a; k <= b; k = addDK(k, 1)) { if (k > todayK()) break; const H = (S.health && S.health.days && S.health.days[k]) || {}, J = (S.journal && S.journal.e && S.journal.e[k]) || {}, G = ((S.game && S.game.days) || {})[k] || {};
+      const prev = (S.health && S.health.days && S.health.days[addDK(k, -1)]) || {};
+      out.push({ k, sleep: H.sleep ? +H.sleep.h : null, sport: (H.burn || []).length > 0, steps: +H.steps || 0, focus: +G.focus || 0, mood: J.m ? +J.m : null, busy: itemsOn(k).filter(x => !x.allDay).length, prevSport: (prev.burn || []).length > 0 }); } return out; },
+  facts(a, b) { const R = this.rows(a, b), out = [], mean = (L, f) => { const v = L.map(f).filter(x => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+    const fm = m => m >= 60 ? `${Math.floor(m / 60)} h ${Math.round(m % 60) ? Math.round(m % 60) + ' min' : ''}`.trim() : `${Math.round(m)} min`;
+    const study = (lbl, A, B, a1, b1) => { if (A.length < 3 || B.length < 3) return; const x = mean(A, r => r.focus), y = mean(B, r => r.focus); if (x == null || y == null || Math.max(x, y) < 20) return; const d = (x - y) / Math.max(1, y); if (Math.abs(d) < .15) return;
+      out.push({ e: Math.abs(d), em: '📚', t: d > 0 ? `${a1} hai studiato il <b>${Math.round(d * 100)}% in più</b>` : `${b1} hai studiato il <b>${Math.round(-d / (1 + d) * 100)}% in più</b>`, s: `${fm(x)} contro ${fm(y)} al giorno` }); };
+    const feel = (A, B, a1, b1) => { const x = mean(A, r => r.mood), y = mean(B, r => r.mood); if (x == null || y == null || A.filter(r => r.mood).length < 2 || B.filter(r => r.mood).length < 2 || Math.abs(x - y) < .4) return;
+      out.push({ e: Math.abs(x - y) / 2, em: '🙂', t: x > y ? `${a1} ti sei sentito <b>meglio</b>` : `${b1} ti sei sentito <b>meglio</b>`, s: `umore ${Math.max(x, y).toFixed(1).replace('.', ',')} contro ${Math.min(x, y).toFixed(1).replace('.', ',')} su 5` }); };
+    const S7 = R.filter(r => r.sleep != null && r.sleep >= 7), S6 = R.filter(r => r.sleep != null && r.sleep < 7);
+    study('sonno', S7, S6, 'Dopo almeno 7 ore di sonno', 'Dormendo meno di 7 ore'); feel(S7, S6, 'Dormendo almeno 7 ore', 'Dormendo meno di 7 ore');
+    const SP = R.filter(r => r.sport), NS = R.filter(r => !r.sport); study('sport', SP, NS, 'Nei giorni in cui ti sei allenato', 'Nei giorni senza allenamento'); feel(SP, NS, 'Nei giorni di allenamento', 'Nei giorni senza allenamento');
+    const W = R.filter(r => r.steps >= 7000), NW = R.filter(r => r.steps && r.steps < 7000); feel(W, NW, 'Camminando di più (7000+ passi)', 'Camminando meno');
+    const BZ = R.filter(r => r.busy >= 4), LT = R.filter(r => r.busy <= 2); study('impegni', LT, BZ, 'Nelle giornate con pochi impegni', 'Nelle giornate piene');
+    const wk = Array.from({ length: 7 }, (_, i) => mean(R.filter(r => (DayN.of(r.k) + 3) % 7 === i), r => r.focus)); const best = wk.reduce((bi, v, i) => v != null && (wk[bi] == null || v > wk[bi]) ? i : bi, 0);
+    if (wk[best] != null && wk[best] >= 30) out.push({ e: .01, em: '🗓️', t: `Il tuo giorno migliore per studiare: <b>${DOW[(best + 1) % 7]}</b>`, s: `in media ${fm(wk[best])} di focus` });
+    return out.sort((x, y) => y.e - x.e).slice(0, 4); },
+};
+{ const oS = Wrap.slides.bind(Wrap); Wrap.slides = function (kind, ref) { const r = oS(kind, ref); try { const F = WrapX.facts(r.R.a, r.R.b); if (F.length >= 2) { const i = r.out.findIndex(x => x.bg === 'persona'), sl = { bg: 'mood', html: `<span class="rx-emo">🔬</span><small class="rx-eye">Cosa ha funzionato</small><h2 class="rx-mid">Le tue abitudini, a confronto</h2><ul class="rx-facts">${F.map(f => `<li>${f.em} ${f.t}<br><span style="opacity:.75;font-size:.9em">${esc(f.s)}</span></li>`).join('')}</ul><p class="rx-sub" style="font-size:13px">Confronti tra i tuoi giorni ${kind === 'year' ? 'dell\'anno' : 'del mese'}: dicono cosa va insieme, non per forza il perché.</p>` }; r.out.splice(i >= 0 ? i : r.out.length, 0, sl); } } catch (_) {} return r; }; }
+
+/* ---------- Impostazioni › Orbita personale ---------- */
+Promise.resolve().then(() => { const oS = VIEWS.settings.render; VIEWS.settings.render = function () { const C = SyncC.all().length, A = AutoBk.cfg(), L = Leave.P(), R = Replan.P();
+  return oS.call(this) + `<div class="section-h">Orbita personale</div><div class="list">
+    <button class="row" data-act="autoBk"><span class="tile-ico" style="background:var(--green)">${ico('cloud')}</span><span class="grow"><div class="t">Backup automatico</div><div class="s">${A.every === 'off' ? 'Spento' : (A.every === 'day' ? 'Ogni giorno' : 'Ogni settimana') + (AutoBk.drive() ? ' · Google Drive' : ' · su questo dispositivo') + (A.lock ? ' · protetto' : '')}</div></span>${ico('right', 'sm')}</button>
+    <button class="row" data-act="syncConflicts"><span class="tile-ico" style="background:${C ? 'var(--orange)' : 'var(--blue)'}">${ico('refresh')}</span><span class="grow"><div class="t">Conflitti di sincronizzazione</div><div class="s">${C ? C + (C === 1 ? ' modifica da rivedere' : ' modifiche da rivedere') : 'Le modifiche da più dispositivi vengono unite'}</div></span>${ico('right', 'sm')}</button>
+    <button class="row" data-act="leaveSet"><span class="tile-ico" style="background:var(--indigo)">${ico('car')}</span><span class="grow"><div class="t">Esci adesso</div><div class="s">${L.on ? `Avvisi per uscire · ${(GOBY[L.by] || GOBY.auto)[0].toLowerCase()} · margine ${L.margin} min` : 'Spento'}</div></span>${ico('right', 'sm')}</button>
+    <div class="row"><span class="tile-ico" style="background:var(--accent)">${ico('cal')}</span><span class="grow"><div class="t">Ripianifica da solo ogni mattina</div><div class="s">I promemoria rimasti indietro vanno negli spazi liberi dei prossimi giorni (max ${R.cap} al giorno)</div></span>${toggleBtn('rpAuto', R.auto)}</div>
+  </div>`; };
+  const oM = VIEWS.settings.mount; VIEWS.settings.mount = function (root) { const r = oM ? oM.apply(this, arguments) : undefined; const t = root && $('#rpAuto', root); if (t && !t._w) { t._w = 1; wireToggle(t, v => Replan.set('auto', v)); } return r; }; });
+
+/* =========================================================================
+   xp6_ask — Orbita personale: "Chiedi ai tuoi appunti"
+   A question in your own words, an answer made only from your material:
+   notes, the text of PDFs and documents, the handwriting already made
+   searchable in the notebooks (and the typed text on their pages), the
+   transcripts of recorded lessons. Every claim carries its source [n];
+   tap it to open the note, the PDF at that page, the notebook at that page
+   or the recording at that minute.
+   How: the material is cut into short passages, the passages are ranked
+   with BM25 (accents, plurals and small words don't matter), the best 10
+   go to the AI with the rule "answer only from these, cite them". Without
+   an AI it still shows where you wrote about it, best passage first.
+   The assistant gets the same search as a tool ("10 domande su quello che
+   ho scritto sulle travi").
+   ========================================================================= */
+const AskN = {
+  STOP: new Set('il lo la i gli le un uno una di a da in con su per tra fra e ed o od ma se che chi cui non piu più come dove quando quale quali quanto questo questa questi queste quello quella quelli quelle del dello della dei degli delle al allo alla ai agli alle dal dallo dalla dai dagli dalle nel nello nella nei negli nelle sul sullo sulla sui sugli sulle col coi è e\' sono era essere ha hanno ho hai abbiamo avere fa fare sia anche gia già poi cosa cose ci si mi ti vi ne lo li sua suo sue suoi mio mia miei mie tuo tua tuoi tue nostro loro ad al c\' l\' d\' un\' all\' dell\' nell\' sull\' quindi dunque cioe cioè ovvero oppure allora qual differenza spiega spiegami dimmi cos cosa'.split(' ')),
+  fold: s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''),
+  /** words → light stems (Italian endings), stop words out */
+  terms(s) { const out = []; for (let w of this.fold(s).split(/[^a-z0-9]+/)) { if (w.length < 2 || this.STOP.has(w)) continue; if (/^\d+$/.test(w)) { out.push(w); continue; }
+      if (w.length > 5) w = w.replace(/(azioni|azione|amenti|amento|imenti|imento|mente|issimi|issime|issimo|issima|abili|abile|ibili|ibile|zioni|zione|ture|tura)$/, '');
+      if (w.length > 4) w = w.replace(/[aeiou]$/, ''); if (w.length > 3) w = w.replace(/(h)$/, ''); out.push(w); } return out; },
+};
+const Ask = {
+  hist: [], built: 0, P: null,
+  /** every passage of your material: {kind, src, label, where, text, open} */
+  corpus() {
+    const sig = [Object.keys(S.notes).length, S.docs.length, Object.keys(S.dtx).length, Object.keys(S.boards).length, Store.stamps.docs || 0, Object.values(S.notes).reduce((m, n) => Math.max(m, n.updated || 0), 0), Object.values(S.boards).reduce((m, b) => Math.max(m, b.updated || 0), 0)].join('|');
+    if (this.P && this.sig === sig) return this.P; const P = [];
+    const cut = (text, n = 650, ov = 120) => { const t = String(text || '').replace(/\s+/g, ' ').trim(), out = []; if (!t) return out; if (t.length <= n) return [t];
+      for (let i = 0; i < t.length; i += n - ov) { let a = i, b = Math.min(t.length, i + n); if (a > 0) { const sp = t.indexOf(' ', a); if (sp > 0 && sp - a < 40) a = sp + 1; } if (b < t.length) { const sp = t.lastIndexOf(' ', b); if (sp > a + 200) b = sp; } out.push(t.slice(a, b)); if (b >= t.length) break; } return out; };
+    for (const n of Object.values(S.notes)) { const txt = n.text || htmlToText(n.html || ''); cut(txt).forEach((t, i) => P.push({ kind: 'note', src: n.id, label: n.title || 'Nota senza titolo', where: '', text: (i ? '' : (n.title || '') + '. ') + t, open: () => Ask.openNote(n.id) })); }
+    for (const d of S.docs) { const x = S.dtx[d.id]; if (!x || !x.t) continue;
+      const parts = String(x.t).split(/\[p\.(\d+)\]/); if (parts.length > 1) { for (let i = 1; i < parts.length; i += 2) { const pg = +parts[i]; cut(parts[i + 1]).forEach(t => P.push({ kind: 'doc', src: d.id, label: d.name, where: 'p. ' + pg, text: t, open: () => Ask.openDoc(d.id, pg) })); } }
+      else cut(x.t).forEach(t => P.push({ kind: 'doc', src: d.id, label: d.name, where: '', text: t, open: () => Ask.openDoc(d.id) })); }
+    for (const b of Object.values(S.boards)) { const pages = NB.is(b) ? b.pages : [{ id: 'all' }];
+      pages.forEach((p, i) => { const typed = (NB.is(b) ? NB.strokesOf(b, i) : b.strokes || []).filter(st => st.t === 'txt').map(st => st.s).join('\n'), hand = (b.ocr || {})[p.id] || '', t = [p.title || '', hand, typed].filter(Boolean).join('. ');
+        cut(t).forEach(x => P.push({ kind: 'ink', src: b.id, label: b.title || 'Quaderno', where: NB.is(b) ? 'pagina ' + (i + 1) : '', text: x, open: () => openHit({ b, i }) })); });
+      for (const r of b.recs || []) { const T = r.tx || []; if (!T.length) continue; let cur = null; const flush = () => { if (!cur || !cur.t.trim()) return; const s0 = cur.s; P.push({ kind: 'rec', src: b.id, label: (b.title || 'Lezione') + (r.at ? ' · ' + new Date(r.at).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }) : ''), where: 'min ' + fmtSec(s0), text: cur.t.trim(), open: () => openMoment(b, r, s0) }); };
+        for (const seg of T) { if (!cur || seg.s - cur.s > 75 || cur.t.length > 600) { flush(); cur = { s: seg.s, t: '' }; } cur.t += ' ' + (seg.t || ''); } flush(); } }
+    for (const p of P) { p.tm = AskN.terms(p.text); p.len = p.tm.length; }
+    this.P = P; this.sig = sig; this.df = null; return P; },
+  /** BM25 → the best passages (no more than 3 from the same source) */
+  search(q, k = 10) { const P = this.corpus(), Q = [...new Set(AskN.terms(q))]; if (!Q.length || !P.length) return [];
+    if (!this.df) { this.df = new Map(); for (const p of P) for (const t of new Set(p.tm)) this.df.set(t, (this.df.get(t) || 0) + 1); this.avg = P.reduce((s, p) => s + p.len, 0) / P.length || 1; }
+    const N = P.length, k1 = 1.4, bb = .72, idf = t => { const n = this.df.get(t) || 0; return Math.log(1 + (N - n + .5) / (n + .5)); }, I = Q.map(idf), sc = [];
+    for (const p of P) { if (!p.len) continue; const f = new Map(); for (const t of p.tm) if (Q.includes(t)) f.set(t, (f.get(t) || 0) + 1); if (!f.size) continue;
+      let s = 0; Q.forEach((t, j) => { const x = f.get(t) || 0; if (x) s += I[j] * x * (k1 + 1) / (x + k1 * (1 - bb + bb * p.len / this.avg)); });
+      s *= 1 + .25 * (f.size / Q.length); if (AskN.fold(p.label).includes(AskN.fold(q).slice(0, 40))) s *= 1.2; sc.push([s, p]); }
+    sc.sort((a, b) => b[0] - a[0]); const out = [], per = {}; for (const [s, p] of sc) { const key = p.kind + p.src; if ((per[key] || 0) >= 3) continue; per[key] = (per[key] || 0) + 1; out.push({ ...p, score: s }); if (out.length >= k) break; } return out; },
+  ico(k) { return { note: 'note', doc: 'folder', ink: 'pencil', rec: 'mic' }[k] || 'note'; },
+  kindL(k) { return { note: 'Nota', doc: 'Documento', ink: 'Quaderno', rec: 'Lezione registrata' }[k] || ''; },
+  /* opening a source */
+  openNote(id) { Sheets.slice().forEach(s => s.close()); UI.note = id; UI.noteEditing = false; go('notes'); },
+  async openDoc(id, pg) { Sheets.slice().forEach(s => s.close()); const d = S.docs.find(x => x.id === id); if (!d) return; if (d.ext !== 'pdf') return Viewer.open(id);
+    await Reader.open(id); if (!pg) return; for (let i = 0; i < 30; i++) { const w = Reader.el && $(`.rpage[data-n="${pg}"]`, Reader.el); if (w) { w.scrollIntoView({ block: 'start' }); return; } await new Promise(r => setTimeout(r, 150)); } },
+  /** the answer: the AI with the passages, or the passages alone */
+  async answer(q) { const hits = this.search(q, 10), sample = await Cap.get('sample').catch(() => null);
+    if (!hits.length) return { q, hits, text: null, none: true };
+    if (!sample) return { q, hits, text: null, noAI: true };
+    const ctx = hits.map((h, i) => `[${i + 1}] (${this.kindL(h.kind)}: ${h.label}${h.where ? ', ' + h.where : ''})\n${h.text}`).join('\n\n');
+    const prompt = `Sei il tutor personale di uno studente. Rispondi in italiano alla sua domanda usando SOLO i suoi appunti qui sotto (note, PDF, quaderni scritti a mano, trascrizioni di lezioni). Regole:\n- dopo ogni frase che usa un appunto metti il numero tra parentesi quadre, es. [2] o [1][3];\n- se gli appunti non bastano a rispondere, dillo chiaramente e spiega cosa manca, senza inventare;\n- formule in testo semplice; risposta chiara e ordinata, al massimo 220 parole; puoi usare elenchi con "- ".\n\nDomanda: ${q}\n\nAppunti:\n${ctx}`;
+    try { const r = await sample(prompt); const text = String((r && (r.text || r)) || '').trim(); return { q, hits, text: text || null, noAI: !text }; } catch (e) { return { q, hits, text: null, err: true }; } },
+  /** text with [n] → html with tappable chips */
+  fmt(text, hits) { let h = esc(text).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    h = h.split('\n').map(l => /^\s*[-•]\s+/.test(l) ? `<li>${l.replace(/^\s*[-•]\s+/, '')}</li>` : l ? `<p>${l}</p>` : '').join('').replace(/(<li>.*?<\/li>)+/g, m => `<ul>${m}</ul>`);
+    return h.replace(/\[(\d{1,2})\]/g, (m, n) => hits[+n - 1] ? `<button class="ask-cite" data-cite="${+n - 1}" title="${esc(hits[+n - 1].label)}">${n}</button>` : ''); },
+  mark(t, q) { const Q = AskN.terms(q); let out = esc(t); const F = AskN.fold(t); const spans = []; for (const w of Q) { let i = F.indexOf(w); while (i >= 0 && spans.length < 12) { spans.push([i, i + w.length]); i = F.indexOf(w, i + w.length); } }
+    if (!spans.length) return out; spans.sort((a, b) => a[0] - b[0]); let res = '', p = 0; for (const [a, b0] of spans) { if (a < p) continue; let b = b0; while (b < t.length && /[a-zà-ù0-9]/i.test(t[b])) b++; res += esc(t.slice(p, a)) + '<mark>' + esc(t.slice(a, b)) + '</mark>'; p = b; } return res + esc(t.slice(p)); },
+  card(r) { const src = (h, i) => `<button class="row ask-src" data-src="${i}"><span class="tile-ico" style="background:${{ note: 'var(--yellow)', doc: 'var(--red)', ink: 'var(--blue)', rec: 'var(--pink)' }[h.kind]}">${ico(this.ico(h.kind))}</span><span class="grow" style="min-width:0;text-align:left"><div class="t">${i + 1}. ${esc(h.label)}${h.where ? ` <span class="muted">· ${esc(h.where)}</span>` : ''}</div><div class="s ask-snip">${this.mark(h.text.slice(0, 260), r.q)}${h.text.length > 260 ? '…' : ''}</div></span></button>`;
+    const head = r.none ? `<div class="empty" style="padding:18px 8px"><div style="font-size:30px">🔎</div><b>Non ho trovato niente nei tuoi appunti</b><p class="muted" style="margin:6px 0 0">Prova con altre parole. I PDF diventano cercabili da Documenti › Rendi cercabili, la scrittura a mano quando il quaderno è indicizzato.</p></div>`
+      : r.text ? `<div class="ask-ans">${this.fmt(r.text, r.hits)}</div>` : `<p class="muted" style="margin:0;font-size:14px">${r.err ? 'L\'IA non ha risposto: ecco dove ne parli.' : 'Senza un\'IA collegata ti mostro dove ne parli, dal punto più pertinente.'}</p>`;
+    return `<div class="ask-q">${esc(r.q)}</div>${head}${r.hits.length ? `<div class="section-h" style="margin:8px 0 4px">Fonti</div><div class="list">${r.hits.map(src).join('')}</div>` : ''}`; },
+};
+const fmtSec = s => { s = Math.max(0, Math.round(+s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+ACT.askNotes = (q0) => { const qq = typeof q0 === 'string' ? q0 : '';
+  const sh = openSheet({ title: 'Chiedi ai tuoi appunti', wide: true, left: { label: 'Chiudi' }, body: `
+    <form id="askF" style="display:flex;gap:8px"><input class="input" id="askQ" placeholder="Es. differenza tra flessione e torsione" autocomplete="off" style="flex:1" value="${esc(qq)}"><button class="btn primary" type="submit">${ico('search', 'sm')}Chiedi</button></form>
+    <p class="muted" style="margin:0;font-size:12.5px" id="askInfo"></p><div id="askOut"></div>`,
+    onMount(el) { const P = Ask.corpus(), C = k => P.filter(p => p.kind === k).length; $('#askInfo', el).textContent = `Cerco in ${Object.keys(S.notes).length} note, ${new Set(P.filter(p => p.kind === 'doc').map(p => p.src)).size} documenti, ${new Set(P.filter(p => p.kind === 'ink').map(p => p.src)).size} quaderni${C('rec') ? ', ' + new Set(P.filter(p => p.kind === 'rec').map(p => p.src)).size + ' lezioni registrate' : ''}. Rispondo solo con quello che hai scritto tu.`;
+      const out = $('#askOut', el), q = $('#askQ', el);
+      const wire = r => { $$('[data-cite]', out).forEach(b => b.onclick = () => r.hits[+b.dataset.cite].open()); $$('[data-src]', out).forEach(b => b.onclick = () => r.hits[+b.dataset.src].open()); };
+      const run = async () => { const t = q.value.trim(); if (t.length < 3) return; out.innerHTML = `<div class="ask-q">${esc(t)}</div><div class="ask-wait"><span class="spin"></span> Leggo i tuoi appunti…</div>`;
+        const r = await Ask.answer(t); Ask.hist.unshift(r); Ask.hist = Ask.hist.slice(0, 8); out.innerHTML = Ask.card(r) + (Ask.hist.length > 1 ? `<div class="section-h" style="margin:14px 0 4px">Domande di prima</div><div class="list">${Ask.hist.slice(1).map((h, i) => `<button class="row" data-old="${i + 1}"><span class="grow t" style="text-align:left">${esc(h.q)}</span>${ico('right', 'sm')}</button>`).join('')}</div>` : ''); wire(r);
+        $$('[data-old]', out).forEach(b => b.onclick = () => { const h = Ask.hist[+b.dataset.old]; out.innerHTML = Ask.card(h); wire(h); q.value = h.q; }); };
+      $('#askF', el).onsubmit = e => { e.preventDefault(); run(); }; setTimeout(() => { q.focus(); if (qq) run(); }, 120); } });
+  return sh; };
+/* ⌘K: a question goes to your notes */
+CMD_SRC.push(q => q.length < 6 ? [] : [{ sec: 'Azioni', t: `Chiedi ai tuoi appunti: «${q.length > 50 ? q.slice(0, 50) + '…' : q}»`, s: 'Risposta con le fonti dalle tue note, PDF, quaderni e lezioni', i: 'search', fn: () => ACT.askNotes(q) }]);
+/* Notes: a button next to "Nota" */
+{ const oA = VIEWS.notes.actions; VIEWS.notes.actions = function () { return `<button class="btn sm" data-act="askNotes">${ico('search', 'sm')}Chiedi</button>` + (oA ? oA.call(this) : ''); }; }
+/* the assistant can read your notes too */
+Promise.resolve().then(() => { const oT = Assistant.tools.bind(Assistant); Assistant.tools = function () { const L = oT(), self = this;
+  L.push({ name: 'search_my_notes', description: 'Cerca nel materiale di studio dell\'utente (note, PDF, quaderni scritti a mano, trascrizioni delle lezioni) e restituisce i passaggi più pertinenti con la fonte. Usala per rispondere su cosa ha scritto o studiato, per fare domande di ripasso o riassunti dai suoi appunti.', inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'argomento o domanda' }, max: { type: 'integer', minimum: 1, maximum: 12 } }, required: ['query'] },
+    execute(i) { const H = Ask.search(String(i.query || ''), clamp(+i.max || 8, 1, 12)); self.note('search', `Cercato nei tuoi appunti: ${i.query} (${H.length})`); return { count: H.length, passages: H.map(h => ({ source: `${Ask.kindL(h.kind)}: ${h.label}${h.where ? ', ' + h.where : ''}`, text: h.text })) }; } });
+  return L; }; });
+/* look */
+{ const st = document.createElement('style'); st.textContent = `.ask-q{font:700 20px/1.25 var(--f-round,inherit);letter-spacing:-.01em;margin:6px 0 10px}.ask-ans{font-size:15.5px;line-height:1.55}.ask-ans p{margin:0 0 8px}.ask-ans ul{margin:0 0 8px;padding-left:20px}.ask-cite{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin:0 1px;border-radius:9px;border:0;background:var(--accent,#007AFF);color:#fff;font:600 11px/1 -apple-system,system-ui,sans-serif;vertical-align:2px;cursor:pointer}.ask-snip{white-space:normal!important;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ask-snip mark{background:rgba(255,204,0,.35);color:inherit;border-radius:3px;padding:0 1px}.ask-wait{display:flex;align-items:center;gap:10px;color:var(--label2,#8e8e93);padding:12px 0}.ask-wait .spin{width:16px;height:16px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:askspin .8s linear infinite}@keyframes askspin{to{transform:rotate(360deg)}}`; document.head.appendChild(st); }
+
+/* =========================================================================
+   xp7_travel — Orbita personale: the journey between appointments
+   In the calendar (day and week), before an appointment that is in another
+   place, a striped band shows the journey: "🚗 25 min". If the time between
+   the two appointments is not enough, the band turns red and says it:
+   "servono 35 min, hai 15". The first appointment of the day with a place
+   gets the journey from home.
+   The same check runs when you add or move an appointment (a warning if it
+   no longer works) and Today shows the next problem of the coming days.
+   Times come from the same route engine as "Esci adesso" (by car, transit,
+   on foot or by bike, with rush hours), kept for a week per pair of places.
+   ========================================================================= */
+const Travel = {
+  K: 'orbita.travel', NK: 'orbita.travel.told', C: {}, q: new Set(), busy: false,
+  on() { return S.profile.travelCal !== false; },
+  load() { try { this.C = JSON.parse(localStorage.getItem(this.K) || '{}') || {}; } catch (_) { this.C = {}; } },
+  keep() { const old = Date.now() - 7 * 864e5; for (const [k, v] of Object.entries(this.C)) if (!v || v.at < old) delete this.C[k]; try { localStorage.setItem(this.K, JSON.stringify(this.C)); } catch (_) {} },
+  norm: s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(),
+  real(loc) { const t = String(loc || '').trim(); return !!t && !/^(online|teams|zoom|meet|google meet|skype|da remoto|remoto|casa)$/i.test(t) && !/^https?:\/\//i.test(t); },
+  by() { try { return Leave.P().by; } catch (_) { return S.profile.goBy || 'auto'; } },
+  key(from, to, by) { return by + '|' + (from === '@home' ? '@home' : this.norm(from)) + '|' + this.norm(to); },
+  /** the journeys of day k: [{from, to, at (min), gap (min or null), key, after (title), before (title)}] */
+  legs(k) { const its = itemsOn(k).filter(it => !it.allDay && it.s && (it.kind === 'event' || it.kind === 'exam' || it.kind === 'ext')).map(it => ({ ...it, sm: hm2m(it.s), em: hm2m(it.e) || hm2m(it.s) + 60 })).sort((a, b) => a.sm - b.sm), out = [], by = this.by();
+    let prev = null, first = true;
+    for (const it of its) { const ev = it.ev || {}; if (ev.leg || ev.trip || ev.noLeave) { prev = null; continue; }
+      if (!this.real(it.loc)) { if (it.loc && /casa/i.test(it.loc)) prev = { loc: '@home', em: it.em, title: it.title }; continue; }
+      if (prev && prev.loc && this.norm(prev.loc) !== this.norm(it.loc)) out.push({ from: prev.loc, to: it.loc, at: it.sm, gap: Math.max(0, it.sm - prev.em), key: this.key(prev.loc, it.loc, by), after: prev.title, before: it.title, id: it.id });
+      else if (first && !prev && Route.home()) out.push({ from: '@home', to: it.loc, at: it.sm, gap: null, key: this.key('@home', it.loc, by), before: it.title, id: it.id, home: true });
+      first = false; prev = { loc: it.loc, em: it.em, title: it.title }; }
+    return out; },
+  min(l) { const c = this.C[l.key]; return c && !c.none ? c.min : null; },
+  bad(l) { const m = this.min(l); return m != null && l.gap != null && m > l.gap; },
+  /** work out the missing journeys, a few at a time */
+  need(days) { if (IN_CLAUDE || !this.on()) return; for (const k of days) for (const l of this.legs(k)) if (!this.C[l.key]) this.q.add(JSON.stringify([l.from, l.to, k, l.at, l.key])); this.run(); },
+  async run() { if (this.busy || !this.q.size) return; this.busy = true; let n = 0, got = 0;
+    try { const by = this.by(), H = await Route.homeGeo().catch(() => null);
+      for (const j of [...this.q]) { this.q.delete(j); if (++n > 14) break; const [from, to, k, at, key] = JSON.parse(j); if (this.C[key]) continue;
+        const when = parseD(k); when.setHours(Math.floor(at / 60), at % 60, 0, 0);
+        const A = from === '@home' ? H : from; if (!A) continue;
+        try { const r = await Route.trip(A, to, by, when); this.C[key] = r ? { min: r.min, km: r.km, by: r.by, rush: r.rush, est: r.est, at: Date.now() } : { none: true, at: Date.now() }; got++; } catch (_) {} }
+      if (got) { this.keep(); if (UI.view === 'calendar' || UI.view === 'today') App.refresh(); this.tell(); } }
+    finally { this.busy = false; if (this.q.size) setTimeout(() => this.run(), 1500); } },
+  /** the problems of the next days */
+  problems(days = 7) { const out = []; for (let i = 0; i < days; i++) { const k = addDK(todayK(), i); for (const l of this.legs(k)) if (this.bad(l)) out.push({ ...l, k, min: this.min(l) }); } return out; },
+  told() { try { return JSON.parse(localStorage.getItem(this.NK) || '{}'); } catch (_) { return {}; } },
+  /** a warning for problems that are new (e.g. you just moved an appointment) */
+  tell() { if (!this.armed) return; this.armed = false; const T = this.told(), P = this.problems(14).filter(p => !T[p.key + p.k + p.at]); if (!P.length) return;
+    for (const p of P) T[p.key + p.k + p.at] = Date.now(); try { localStorage.setItem(this.NK, JSON.stringify(T)); } catch (_) {}
+    const p = P[0]; Island.toast({ icon: 'car', c: 'var(--red)', t: P.length > 1 ? `${P.length} spostamenti non ci stanno` : 'Non fai in tempo ad arrivare', s: `${relDay(p.k, true)}: da «${p.after}» a «${p.before}» servono ${p.min} min, ne hai ${p.gap}`, ms: 5200, action: { label: 'Vedi', fn: () => { UI.cal.cursor = p.k; UI.cal.mode = 'day'; go('calendar'); } } }); },
+  band(l) { const m = this.min(l), G = GOBY[(this.C[l.key] || {}).by] || GOBY[this.by()] || GOBY.auto; if (m == null || m < 3) return '';
+    const bad = this.bad(l), top = (l.at - m) / 60 * HOUR, h = m / 60 * HOUR;
+    return `<div class="wtr${bad ? ' bad' : ''}${l.home ? ' home' : ''}" style="top:${top}px;height:${Math.max(14, h)}px" title="${esc((l.home ? 'Da casa' : 'Da ' + l.from) + ' a ' + l.to)}"><span>${G[1]} ${m} min${bad ? ` · servono ${m}, hai ${l.gap}` : l.home ? ' da casa' : ''}</span></div>`; },
+};
+Travel.load();
+/* the bands in the day and week calendar */
+{ const oW = VIEWS.calendar.week; VIEWS.calendar.week = function () { let h = oW.apply(this, arguments); if (!Travel.on()) return h; const days = this.range();
+    for (const k of days) { const L = Travel.legs(k); if (!L.length) continue; const tag = `data-col="${k}" style="height:${24 * HOUR}px">`, i = h.indexOf(tag); if (i < 0) continue; h = h.slice(0, i + tag.length) + L.map(l => Travel.band(l)).join('') + h.slice(i + tag.length); }
+    Travel.need(days); return h; }; }
+/* Today: the next journey that doesn't fit */
+{ const oR = VIEWS.today.render; VIEWS.today.render = function () { const h = oR.call(this); if (!Travel.on()) return h; Travel.need([todayK(), addDK(todayK(), 1), addDK(todayK(), 2)]); const P = Travel.problems(3); if (!P.length) return h; const p = P[0];
+    const card = `<section class="card span-12 lv-card tr-card"><span class="lv-em">⏱️</span><span class="grow" style="min-width:0"><div class="lv-t">Non fai in tempo${P.length > 1 ? ` · ${P.length} spostamenti` : ''}</div><div class="lv-s">${esc(relDay(p.k, true))}: da «${esc(p.after)}» alle ${m2hm(p.at - p.gap)} a «${esc(p.before)}» alle ${m2hm(p.at)}</div><div class="lv-s">servono ${p.min} min di viaggio, ne hai ${p.gap}</div></span><button class="btn sm" data-trday="${p.k}">Vedi</button></section>`;
+    const g = h.indexOf('grid dash">'); if (g >= 0) { const i = g + 'grid dash">'.length; return h.slice(0, i) + card + h.slice(i); } return card + h; }; }
+document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('[data-trday]'); if (!b) return; UI.cal.cursor = b.dataset.trday; UI.cal.mode = 'day'; go('calendar'); });
+/* adding or moving an appointment: check right away */
+{ const oT = Store.touch.bind(Store); Store.touch = function (id, d) { const r = oT(id, d); if (id === 'events' && Travel.on() && !IN_CLAUDE) { clearTimeout(Travel.tt); Travel.tt = setTimeout(() => { Travel.armed = true; const days = []; for (let i = 0; i < 14; i++) days.push(addDK(todayK(), i)); Travel.need(days); if (!Travel.q.size && !Travel.busy) Travel.tell(); }, 1800); } return r; }; }
+setTimeout(() => { const days = []; for (let i = 0; i < 7; i++) days.push(addDK(todayK(), i)); Travel.need(days); }, 12000);
+/* the switch, in the "Esci adesso" settings */
+{ const oL = ACT.leaveSet; ACT.leaveSet = function () { const r = oL.apply(this, arguments); const s = Sheets[Sheets.length - 1]; if (s && s.el) { const list = $('.list', s.el); if (list) { list.insertAdjacentHTML('beforeend', `<div class="row"><span class="grow"><div class="t">Tempo di viaggio nel calendario</div><div class="s">Tra un impegno e l'altro, e avvisi se non fai in tempo</div></span>${toggleBtn('trOn', Travel.on())}</div>`); wireToggle($('#trOn', s.el), v => { S.profile.travelCal = v; save('profile'); App.refresh(); }); } } return r; }; }
+/* look */
+{ const st = document.createElement('style'); st.textContent = `.wcol .wtr{position:absolute;left:2px;right:3px;z-index:0;pointer-events:none;border-radius:6px;background:repeating-linear-gradient(135deg,rgba(142,142,147,.16) 0 6px,rgba(142,142,147,.07) 6px 12px);border-left:3px solid rgba(142,142,147,.55);display:flex;align-items:flex-end;overflow:hidden}.wcol .wtr span{font:600 10.5px/1.2 -apple-system,system-ui,sans-serif;color:var(--label2,#8e8e93);padding:2px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wcol .wtr.home{opacity:.75}.wcol .wtr.bad{background:repeating-linear-gradient(135deg,rgba(255,59,48,.2) 0 6px,rgba(255,59,48,.08) 6px 12px);border-left-color:var(--red,#FF3B30)}.wcol .wtr.bad span{color:var(--red,#FF3B30)}.tr-card.lv-card{box-shadow:0 0 0 2px var(--red,#FF3B30) inset}.tr-card .lv-t{color:var(--red,#FF3B30)}`; document.head.appendChild(st); }
+
+/* =========================================================================
+   xp8_undo — Orbita personale: undo anything
+   Every change you make is remembered (the last 30): a reminder ticked,
+   an appointment moved, a note edited, an expense deleted, a replanning…
+   ⌘Z / Ctrl+Z undoes the last one, ⇧⌘Z / Ctrl+Y does it again; on iPad,
+   three fingers to the left (undo) or to the right (redo), like in the
+   system apps. "Ultime azioni" lists them and undoes any one of them,
+   not only the last.
+   Undo only takes back that change: what you did afterwards in the same
+   place stays (three-way merge with the version after the change).
+   Notebooks and PDF annotations keep their own ⌘Z; changes that arrive
+   from your other devices are not your actions here and are not listed.
+   ========================================================================= */
+const UndoX = {
+  snaps: new Map(), past: [], fut: [], quiet: 0, MAX: 30, ready: false,
+  SKIP: new Set(['game', 'music', 'aikeys']),
+  tracked(id) { return (CORE.includes(id) && !this.SKIP.has(id)) || id.startsWith('note-'); },
+  js(id) { const v = Store.valueOf(id); return v == null ? 'null' : JSON.stringify(v); },
+  init() { for (const id of CORE) if (this.tracked(id)) this.snaps.set(id, this.js(id)); for (const n of Object.keys(S.notes)) this.snaps.set('note-' + n, this.js('note-' + n)); this.ready = true; },
+  NAME: { events: 'impegni', tasks: 'promemoria', exams: 'esami', money: 'spese', profile: 'impostazioni', courses: 'corsi', habits: 'abitudini', goals: 'obiettivi', journal: 'diario', projects: 'progetti', trips: 'viaggi', focuslog: 'sessioni di focus', docs: 'documenti', contacts: 'contatti' },
+  tt(x) { return x && (x.title || x.name || x.note || x.t || x.desc || x.label) || ''; },
+  /** what changed, in words */
+  say(id, a, b) { try {
+      if (id.startsWith('note-')) { const A = JSON.parse(a), B = JSON.parse(b); return !A ? `Nuova nota «${this.tt(B) || 'senza titolo'}»` : !B ? `Nota eliminata «${this.tt(A) || 'senza titolo'}»` : `Nota modificata «${this.tt(B) || 'senza titolo'}»`; }
+      let A = JSON.parse(a), B = JSON.parse(b), where = this.NAME[id] || id;
+      if (!Array.isArray(B) && B && typeof B === 'object' && A && typeof A === 'object') { const k = Object.keys(B).find(k => Array.isArray(B[k]) && JSON.stringify(B[k]) !== JSON.stringify(A[k] || [])); if (k && B[k].every(x => x && x.id != null)) { A = A[k] || []; B = B[k]; } else return `Cambiati: ${where}`; }
+      if (!Array.isArray(A) || !Array.isArray(B)) return `Cambiati: ${where}`;
+      const mA = new Map(A.map(x => [x && x.id, x])), mB = new Map(B.map(x => [x && x.id, x])), add = B.filter(x => !mA.has(x && x.id)), del = A.filter(x => !mB.has(x && x.id)), ch = B.filter(x => mA.has(x && x.id) && JSON.stringify(mA.get(x.id)) !== JSON.stringify(x));
+      const n = add.length + del.length + ch.length; if (!n) return `Cambiati: ${where}`;
+      if (n > 1) return add.length === n ? `Aggiunti ${n} ${where}` : del.length === n ? `Eliminati ${n} ${where}` : `${n} ${where} cambiati`;
+      if (add[0]) return `Aggiunto: ${this.tt(add[0]) || where}`; if (del[0]) return `Eliminato: ${this.tt(del[0]) || where}`;
+      const o = mA.get(ch[0].id), x = ch[0];
+      if (!o.done && x.done) return `Completato: ${this.tt(x)}`; if (o.done && !x.done) return `Riaperto: ${this.tt(x)}`;
+      if (o.date !== x.date || o.due !== x.due || o.start !== x.start || o.time !== x.time) return `Spostato: ${this.tt(x)}`;
+      return `Modificato: ${this.tt(x)}`; } catch (_) { return 'Modifica'; } },
+  /** a save happened: if it is one of your changes, remember it */
+  saw(id) { if (!this.ready || !this.tracked(id)) return; const cur = this.js(id), prev = this.snaps.has(id) ? this.snaps.get(id) : (id.startsWith('note-') ? 'null' : undefined); this.snaps.set(id, cur);
+    if (this.quiet || prev === undefined || prev === cur) return; const now = Date.now(), last = this.past[this.past.length - 1], label = this.say(id, prev, cur);
+    if (last && last.id === id && now - last.at < (id.startsWith('note-') ? 20000 : 1500) && (id.startsWith('note-') || last.label === label)) { last.after = cur; last.at = now; if (!id.startsWith('note-') || cur === 'null') last.label = label; }
+    else { this.past.push({ id, before: prev, after: cur, label, at: now }); if (this.past.length > this.MAX) this.past.shift(); }
+    this.fut = []; },
+  /** take back entry e: only its own change (three-way: base = after it, ours = now, theirs = before it) */
+  put(e, from, to) { const cur = Store.valueOf(e.id), F = JSON.parse(from), T = JSON.parse(to);
+    let v; if (T == null) v = null; else if (cur == null || F == null) v = T; else v = Merge.run(F, JSON.parse(JSON.stringify(cur)), T, 'r', { c: [] });
+    this.quiet++; try { if (v == null && !e.id.startsWith('note-')) return false; if (e.id.startsWith('note-')) { if (v == null) { delete S.notes[e.id.slice(5)]; if (UI.note === e.id.slice(5)) UI.note = null; } else S.notes[e.id.slice(5)] = v; } else Store.apply(e.id, v); save(e.id); this.snaps.set(e.id, this.js(e.id)); } finally { this.quiet--; }
+    App.refresh(); return true; },
+  undo(i = this.past.length - 1) { const e = this.past[i]; if (!e) { Island.toast({ icon: 'refresh', t: 'Niente da annullare', ms: 1400 }); return; }
+    if (!this.put(e, e.after, e.before)) return; this.past.splice(i, 1); this.fut.push(e);
+    Island.toast({ icon: 'refresh', c: 'var(--accent)', t: 'Annullato', s: e.label, ms: 3200, action: { label: 'Ripeti', fn: () => this.redo() } }); },
+  redo() { const e = this.fut.pop(); if (!e) { Island.toast({ icon: 'refresh', t: 'Niente da ripetere', ms: 1400 }); return; }
+    if (!this.put(e, e.before, e.after)) return; this.past.push(e); Island.toast({ icon: 'refresh', c: 'var(--accent)', t: 'Ripetuto', s: e.label, ms: 2400, action: { label: 'Annulla', fn: () => this.undo() } }); },
+  ago(t) { const s = Math.round((Date.now() - t) / 1000); return s < 50 ? 'adesso' : s < 3600 ? Math.round(s / 60) + ' min fa' : new Date(t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }); },
+};
+{ const oT = Store.touch.bind(Store); Store.touch = function (id, d) { const r = oT(id, d); try { UndoX.saw(id); } catch (_) {} return r; }; }
+{ const oA = Store.apply.bind(Store); Store.apply = function (id, v) { const r = oA(id, v); if (UndoX.ready && UndoX.tracked(id) && !UndoX.quiet) UndoX.snaps.set(id, UndoX.js(id)); return r; }; }
+Promise.resolve().then(() => UndoX.init());
+/* keys */
+const undoBusyHere = () => { const ae = document.activeElement; return (ae && (/INPUT|TEXTAREA|SELECT/.test(ae.tagName) || ae.isContentEditable)) || (UI.view === 'boards' && Board.b) || (typeof Reader !== 'undefined' && Reader.el) || Sheets.length > 0; };
+document.addEventListener('keydown', e => { if (!(e.metaKey || e.ctrlKey) || e.altKey || undoBusyHere()) return; const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); UndoX.undo(); } else if ((k === 'z' && e.shiftKey) || (k === 'y' && e.ctrlKey && !e.metaKey)) { e.preventDefault(); UndoX.redo(); } });
+/* iPad: three fingers left = undo, right = redo */
+{ let s = null; document.addEventListener('touchstart', e => { s = e.touches.length === 3 && !(UI.view === 'boards' && Board.b) ? { x: [...e.touches].reduce((a, t) => a + t.clientX, 0) / 3, y: [...e.touches].reduce((a, t) => a + t.clientY, 0) / 3, t: Date.now() } : (e.touches.length > 3 ? null : s); }, { passive: true });
+  document.addEventListener('touchend', e => { if (!s || e.touches.length) { if (!e.touches.length) s = null; return; } const t = e.changedTouches[0]; const dx = t.clientX - s.x, dy = t.clientY - s.y; const ok = Date.now() - s.t < 900 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5; s = null; if (!ok || Sheets.length) return; dx < 0 ? UndoX.undo() : UndoX.redo(); }, { passive: true }); }
+/* the list */
+ACT.undoList = () => { const draw = () => { const P = UndoX.past.slice().reverse(); return P.length ? `<p class="muted" style="margin:0;font-size:14px">Tocca «Annulla» su qualsiasi azione: torna indietro solo quella, quello che hai fatto dopo resta. Scorciatoia: ⌘Z / Ctrl+Z${matchMedia('(pointer: coarse)').matches ? ', o tre dita verso sinistra' : ''}.</p><div class="list">${P.map((e, j) => `<div class="row"><span class="grow" style="min-width:0"><div class="t">${esc(e.label)}</div><div class="s">${UndoX.ago(e.at)}</div></span><button class="btn sm" data-ud="${UndoX.past.length - 1 - j}">Annulla</button></div>`).join('')}</div>${UndoX.fut.length ? `<button class="btn plain" id="udRedo">Ripeti l'ultima annullata</button>` : ''}`
+    : `<div class="empty" style="padding:24px 8px"><div style="font-size:34px">↩︎</div><b>Ancora nessuna azione</b><p class="muted" style="margin:6px 0 0">Qui trovi le ultime ${UndoX.MAX} cose che fai in Orbita, per tornare indietro.</p>${UndoX.fut.length ? `<button class="btn sm" id="udRedo" style="margin-top:10px">Ripeti l'ultima annullata</button>` : ''}</div>`; };
+  openSheet({ title: 'Ultime azioni', left: { label: 'Chiudi' }, body: '<div id="udB"></div>', onMount(el) { const paint = () => { $('#udB', el).innerHTML = draw(); $$('[data-ud]', el).forEach(b => b.onclick = () => { UndoX.undo(+b.dataset.ud); paint(); }); const r = $('#udRedo', el); if (r) r.onclick = () => { UndoX.redo(); paint(); }; }; paint(); } }); };
+CMD_SRC.push(q => { if (!/annull|indietro|undo|ultime az|ripeti/i.test(q)) return []; const L = UndoX.past[UndoX.past.length - 1], out = [];
+  if (L) out.push({ sec: 'Azioni', t: `Annulla: ${L.label}`, s: UndoX.ago(L.at) + ' · ⌘Z', i: 'refresh', fn: () => UndoX.undo() });
+  out.push({ sec: 'Azioni', t: 'Ultime azioni', s: 'Torna indietro su qualsiasi cosa che hai fatto', i: 'list', fn: () => ACT.undoList() }); return out; });
+/* Impostazioni › Orbita personale */
+Promise.resolve().then(() => { const oS = VIEWS.settings.render; VIEWS.settings.render = function () { const h = oS.call(this), tag = '<button class="row" data-act="syncConflicts"', i = h.lastIndexOf(tag); if (i < 0) return h;
+  return h.slice(0, i) + `<button class="row" data-act="undoList"><span class="tile-ico" style="background:var(--gray)">${ico('refresh')}</span><span class="grow"><div class="t">Ultime azioni</div><div class="s">${UndoX.past.length ? UndoX.past.length + ' da poter annullare · ⌘Z' : 'Annulla qualsiasi cosa · ⌘Z'}</div></span>${ico('right', 'sm')}</button>` + h.slice(i); }; });
 
 /* =========================================================
    ASSISTANT — "Segretario": Claude with page tools
