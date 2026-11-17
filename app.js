@@ -8587,7 +8587,8 @@ const WAView = {
   watch() {
     if (!WA || this.ro) return;
     this.ro = new ResizeObserver(() => this.sync()); this.ro.observe(document.body);
-    new MutationObserver(() => { clearTimeout(this.t); this.t = setTimeout(() => this.sync(), 30); }).observe(document.body, { childList: true });
+    /* sheets, ⌘K and menus open inside #layer, not as children of <body>: watch both, or the WhatsApp window stays on top of them */
+    const mo = new MutationObserver(() => { this.sync(); clearTimeout(this.t); this.t = setTimeout(() => this.sync(), 60); }); mo.observe(document.body, { childList: true }); const L = $('#layer'); if (L) mo.observe(L, { childList: true, subtree: true });
     addEventListener('resize', () => this.sync()); $('#scroller') && $('#scroller').addEventListener('scroll', () => this.sync(), { passive: true });
   },
 };
@@ -23508,6 +23509,306 @@ CMD_SRC.push(q => { if (!/annull|indietro|undo|ultime az|ripeti/i.test(q)) retur
 /* Impostazioni › Orbita personale */
 Promise.resolve().then(() => { const oS = VIEWS.settings.render; VIEWS.settings.render = function () { const h = oS.call(this), tag = '<button class="row" data-act="syncConflicts"', i = h.lastIndexOf(tag); if (i < 0) return h;
   return h.slice(0, i) + `<button class="row" data-act="undoList"><span class="tile-ico" style="background:var(--gray)">${ico('refresh')}</span><span class="grow"><div class="t">Ultime azioni</div><div class="s">${UndoX.past.length ? UndoX.past.length + ' da poter annullare · ⌘Z' : 'Annulla qualsiasi cosa · ⌘Z'}</div></span>${ico('right', 'sm')}</button>` + h.slice(i); }; });
+
+/* =========================================================================
+   xp9_nutri — Orbita personale: il tuo piano alimentare
+   1. Your numbers: resting energy (Mifflin-St Jeor), the energy you really
+      use (from your logged meals and the weight trend, when there are
+      enough days), the calories for rest days and training days, protein /
+      carbs / fat in grams (protein by kg of body weight and goal), fibre and
+      water, and how much of it at each meal. Safety first: never below the
+      resting energy or the safe minimum, deficit at most ~25% and 1% of
+      your weight a week, no deficit with a low BMI or under 18.
+      "Usa in Salute" makes these the targets of the whole Health section.
+   2. A week of meals made for you (Mediterranean frequencies: legumes 3×,
+      fish 3×, white meat, eggs, cheese, red meat once), with your
+      exclusions, your number of meals and the grams worked out exactly
+      (each meal solved for its calories and macros). It becomes your diet:
+      what to eat now, ticks, shopping list — marked "Piano di Orbita",
+      which is not a nutritionist's plan.
+   3. Today, without a diet: what to eat at the next meal with the grams
+      that fit what is left of the day.
+   4. "Va bene per la mia dieta?": paste a recipe, photograph it or pick
+      one from the Ricettario. Orbita works out a portion, compares it with
+      that meal of your plan (or of your diet) and says ✅ va bene /
+      ⚠️ va bene con queste modifiche / ❌ meglio di no, with precise changes
+      (less oil, cream → Greek yoghurt, 80 g of pasta instead of 120,
+      +60 g of chicken…) and the numbers before and after. Then: save it
+      changed in the Ricettario, or log the portion as eaten.
+   ========================================================================= */
+const NF = (() => { const M = new Map(FOOD_IDX.map(f => [f.name.toLowerCase(), f])); return n => M.get(String(n).toLowerCase()) || null; })();
+const Nutri = {
+  C() { return { on: false, train: [], meals: 4, excl: [], dislike: '', ...(S.health.coach || {}) }; },
+  setC(k, v) { S.health.coach = { ...this.C(), [k]: v }; save('health'); },
+  /* ---------- energy ---------- */
+  workoutKcal() { const out = []; for (let i = 1; i <= 28; i++) { const k = addDK(todayK(), -i), d = (S.health.days || {})[k]; if (d && d.burn && d.burn.length) out.push(d.burn.reduce((s, a) => s + Health.actKcal(a, k), 0)); } return out.length >= 3 ? Math.round(out.reduce((a, b) => a + b, 0) / out.length) : 300; },
+  isTrain(k = todayK()) { const d = (S.health.days || {})[k]; if (d && d.burn && d.burn.length) return true; return this.C().train.includes(dowIdx(k) + 1); },
+  trend() { const W = S.health.weights.filter(w => w.d >= addDK(todayK(), -28)).sort((a, b) => a.d.localeCompare(b.d)); if (W.length < 3 || dayDiff(W[0].d, W[W.length - 1].d) < 10) return null;
+    const x = W.map(w => dayDiff(W[0].d, w.d)), y = W.map(w => +w.kg), n = x.length, mx = x.reduce((a, b) => a + b) / n, my = y.reduce((a, b) => a + b) / n; let sxy = 0, sxx = 0; for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; } return sxx ? sxy / sxx : null; }, // kg per day
+  formula(k = todayK()) { const p = Health.P(); return Math.round(Health.bmr(k) * (Health.AF[p.act] || Health.AF.light)[0]); },
+  /** the energy you really use, from intake and weight trend (≥ 10 logged days in 3 weeks) */
+  real() { const sl = this.trend(); if (sl == null) return null; const E = []; for (let i = 1; i <= 21; i++) { const k = addDK(todayK(), -i); if (Health.items(k).length >= 2) E.push(Health.eaten(k).kcal); } if (E.length < 10) return null;
+    const avg = E.reduce((a, b) => a + b, 0) / E.length, t = Math.round(avg - sl * 7700), f = this.formula(); return Math.round(clamp(t, f * .75, f * 1.3)); },
+  base() { return this.real() || this.formula(); },
+  warn() { const p = Health.P(), out = [], age = Health.age(), bmi = Health.bmi();
+    if (age < 18) out.push('Hai meno di 18 anni: niente deficit o surplus, solo mantenimento. Per un piano su misura serve un professionista.');
+    if (p.goal === 'lose' && bmi && bmi < 18.5) out.push(`Il tuo BMI è ${bmi.toFixed(1)}: dimagrire non è consigliato, il piano resta in mantenimento.`);
+    if (p.goal === 'lose' && (+p.rate || .5) > Health.weight() * .01) out.push('Hai scelto più dell\'1% del peso a settimana: lo limito a un ritmo sicuro.');
+    return out; },
+  goal() { const p = Health.P(), bmi = Health.bmi(); if (Health.age() < 18) return 'keep'; if (p.goal === 'lose' && bmi && bmi < 18.5) return 'keep'; return p.goal || 'keep'; },
+  /** today's numbers for day k */
+  target(k = todayK()) { const p = Health.P(), w = Health.weight(k) || 70, h = (+p.height || 175) / 100, g = this.goal(), tr = this.isTrain(k), bmr = Health.bmr(k);
+    const tdee = this.base() + (tr ? this.workoutKcal() : 0); let adj = 0;
+    if (g === 'lose') adj = -Math.min((Math.min(+p.rate || .5, w * .01)) * 7700 / 7, tdee * .25); if (g === 'gain') adj = Math.min((+p.rate || .25) * 7700 / 7, 400);
+    const kcal = Math.round(Math.max(tdee + adj, g === 'lose' ? Math.max(bmr, Health.floor()) : Health.floor()) / 10) * 10;
+    const refW = Health.bmi() > 30 ? 25 * h * h : w, prot = Math.round(refW * (g === 'lose' ? 1.8 : g === 'gain' ? 1.8 : 1.5) * (tr ? 1.05 : 1)), fat = Math.round(Math.max(w * .9, kcal * .22 / 9)), carb = Math.max(100, Math.round((kcal - prot * 4 - fat * 9) / 4));
+    return { kcal, p: prot, c: carb, f: fat, fib: Math.round(kcal / 1000 * 14), water: Math.round((w * 35 + (tr ? 500 : 0)) / 50) * 50, tdee, bmr, tr, goal: g, adj: Math.round(adj) }; },
+  /* ---------- meals ---------- */
+  SPLIT: { 3: [['colazione', .25], ['pranzo', .40], ['cena', .35]], 4: [['colazione', .22], ['pranzo', .35], ['merenda', .10], ['cena', .33]], 5: [['colazione', .20], ['spuntino', .08], ['pranzo', .32], ['merenda', .10], ['cena', .30]] },
+  split() { return this.SPLIT[this.C().meals] || this.SPLIT[4]; },
+  mealT(meal, k = todayK()) { const T = this.target(k), s = (this.split().find(x => x[0] === meal) || this.split().find(x => x[0] === (meal === 'spuntini' ? 'merenda' : meal)) || ['', .1])[1]; return { kcal: Math.round(T.kcal * s), p: Math.round(T.p * s), c: Math.round(T.c * s), f: Math.round(T.f * s), share: s }; },
+  /* ---------- exclusions ---------- */
+  EX: [['veg', 'Vegetariano', /pollo|tacchino|manzo|vitello|maiale|lonza|bresaola|prosciutto|salmone|merluzzo|tonno|orata|branzino|gamber|pesce|sgombro|salsiccia|guanciale|pancetta|carne|acciug|vongol|cozze|polpo|calamar/i],
+    ['vegan', 'Vegano', /pollo|tacchino|manzo|vitello|maiale|lonza|bresaola|prosciutto|salmone|merluzzo|tonno|orata|branzino|gamber|pesce|sgombro|salsiccia|guanciale|pancetta|carne|uov|album|latte(?! di)|yogurt(?! di soia)|ricotta|mozzarella|formagg|parmigian|grana|pecorino|feta|skyr|burro(?! di)|panna(?! vegetale)|miele|fiocchi di latte/i],
+    ['lact', 'Senza lattosio', /latte(?! di)|yogurt(?! di soia)|ricotta|mozzarella|panna(?! vegetale)|burro(?! di)|fiocchi di latte|skyr|formaggio spalmabile|philadelphia|scamorza|feta/i],
+    ['glut', 'Senza glutine', /pasta(?! senza| di legumi| di lenticchie| di ceci)|pane(?! senza)|farro|orzo|cous ?cous|bulgur|fette biscottate(?! senza)|crackers(?! di riso)|pangrattato|farina 0|farina integrale|seitan|piadina/i],
+    ['fish', 'Niente pesce', /salmone|merluzzo|tonno|orata|branzino|gamber|pesce|sgombro|acciug|vongol|cozze|polpo|calamar/i],
+    ['red', 'Niente carne rossa', /manzo|vitello|bresaola|maiale|lonza|salsiccia(?! di pollo)|prosciutto|guanciale|pancetta/i]],
+  bad(name) { const C = this.C(), n = String(name || ''); for (const [id, l, re] of this.EX) if (C.excl.includes(id) && re.test(n)) return l; const dl = String(C.dislike || '').split(/[,;\n]/).map(s => s.trim().toLowerCase()).filter(s => s.length > 2); for (const d of dl) if (n.toLowerCase().includes(d)) return 'non ti piace'; return null; },
+  ok(name) { return !!NF(name) && !this.bad(name); },
+  /* ---------- the solver: grams of protein, carb and fat source for a meal target ---------- */
+  BND: { P: [50, 260], C: [20, 140], F: [3, 25] },
+  bnd(n, slot) { const s = n.toLowerCase(); if (slot === 'C') { if (/patat/.test(s)) return [120, 450]; if (/pane|piadina/.test(s)) return [30, 150]; if (/fette|gallette|crackers/.test(s)) return [15, 60]; if (/avena/.test(s)) return [20, 90]; if (/mela|banana|kiwi|arancia|frutti|pera/.test(s)) return [80, 250]; if (/cotto|cotti/.test(s)) return [80, 300]; return [35, 140]; }
+    if (slot === 'P') { if (/uov/.test(s)) return [50, 150]; if (/yogurt|skyr|fiocchi|latte|bevanda/.test(s)) return [100, 300]; if (/lenticch|ceci|fagioli|piselli/.test(s)) return [100, 320]; if (/bresaola|prosciutto/.test(s)) return [30, 100]; if (/mozzarella|ricotta|feta/.test(s)) return [50, 160]; return [70, 250]; }
+    if (/mandorle|noci|arachidi/.test(s)) return [8, 35]; return [3, 25]; },
+  solve(slots, fixed, T) { // slots {P,C,F}: names; fixed [[name,g]]; T {kcal,p,c,f}
+    const F0 = { p: 0, c: 0, f: 0, kcal: 0 }; for (const [n, g] of fixed) { const x = NF(n); if (!x) continue; for (const q of ['p', 'c', 'f', 'kcal']) F0[q] += x[q] * g / 100; }
+    const S_ = {}; for (const s of ['P', 'C', 'F']) if (slots[s]) S_[s] = NF(slots[s]); const g = { P: 0, C: 0, F: 0 }, lim = s => this.bnd(slots[s], s);
+    for (const s of Object.keys(S_)) g[s] = (lim(s)[0] + lim(s)[1]) / 3;
+    const tot = q => F0[q] + Object.keys(S_).reduce((a, s) => a + S_[s][q] * g[s] / 100, 0);
+    for (let it = 0; it < 12; it++) {
+      if (S_.P) { const need = T.p - (tot('p') - S_.P.p * g.P / 100); g.P = clamp(need / Math.max(S_.P.p, .1) * 100, ...lim('P')); }
+      if (S_.F) { const need = T.f - (tot('f') - S_.F.f * g.F / 100); g.F = clamp(need / Math.max(S_.F.f, .1) * 100, ...lim('F')); }
+      if (S_.C) { const need = T.kcal - (tot('kcal') - S_.C.kcal * g.C / 100); g.C = clamp(need / Math.max(S_.C.kcal, 1) * 100, ...lim('C')); } }
+    const rnd = (s, v) => /uov/i.test(slots[s] || '') ? Math.max(50, Math.round(v / 50) * 50) : /olio/i.test(slots[s] || '') ? Math.max(5, Math.round(v / 5) * 5) : Math.round(v / 5) * 5;
+    const items = []; for (const s of ['C', 'P']) if (S_[s]) items.push([slots[s], rnd(s, g[s])]); for (const f of fixed) items.push(f); if (S_.F) items.push([slots.F, rnd('F', g.F)]);
+    return items.filter(([n, gr]) => gr > 0 && NF(n)).map(([n, gr]) => this.item(n, gr)); },
+  item(n, g) { const x = NF(n); return { n: x.name, q: /uov/i.test(n) && !/album/i.test(n) ? `${Math.round(g / 50)} ${g >= 100 ? 'uova' : 'uovo'}` : /olio/i.test(n) ? `${g} g (${g / 10 >= 1 ? Math.round(g / 10) + ' cucchiai' : 'un cucchiaino'})`.replace('1 cucchiai', '1 cucchiaio') : /^latte|^bevanda/i.test(n) ? `${g} ml` : `${g} g`, g, kcal: x.kcal, p: x.p, c: x.c, f: x.f, alt: [] }; },
+  /* ---------- the week ---------- */
+  PROT: { bianca: ['Petto di pollo', 'Petto di tacchino', 'Fesa di tacchino'], pesce: ['Salmone fresco', 'Merluzzo', 'Orata', 'Branzino', 'Tonno al naturale', 'Pesce spada', 'Gamberi'], legumi: ['Lenticchie cotte', 'Ceci cotti/in scatola', 'Fagioli borlotti cotti', 'Fagioli cannellini cotti', 'Piselli'],
+    uova: ['Uovo'], formaggio: ['Mozzarella light', 'Ricotta light', 'Fiocchi di latte', 'Feta'], rossa: ['Manzo magro (fesa)', 'Bresaola'], veg: ['Tofu', 'Proteine della soia (granulare)'] },
+  WEEK: [['legumi', 'pesce'], ['bianca', 'uova'], ['pesce', 'legumi'], ['bianca', 'formaggio'], ['legumi', 'pesce'], ['uova', 'bianca'], ['rossa', 'legumi']],
+  CARB_L: ['Pasta integrale (cruda)', 'Riso basmati (crudo)', 'Farro (crudo)', 'Pasta di semola (cruda)', 'Quinoa (cruda)', 'Orzo perlato (crudo)', 'Cous cous (crudo)'],
+  CARB_D: ['Pane integrale', 'Patate', 'Riso integrale (crudo)', 'Pane ai cereali', 'Quinoa (cruda)', 'Patate dolci (americane)', 'Pane integrale'],
+  VEG: ['Zucchine', 'Broccoli', 'Spinaci', 'Insalata mista', 'Carote', 'Finocchi', 'Verdure grigliate', 'Pomodori', 'Fagiolini', 'Melanzane grigliate'],
+  BRK: [['Yogurt greco 0%', 'Avena in fiocchi', 'Mandorle', [['Frutti di bosco', 100]]], ['Latte parzialmente scremato', 'Fette biscottate integrali', 'Noci', [['Marmellata senza zuccheri aggiunti', 20]]], ['Uovo', 'Pane integrale', 'Olio extravergine d\'oliva', [['Arancia', 150]]], ['Skyr', 'Avena in fiocchi', 'Noci', [['Banana', 100]]]],
+  SNK: [['Yogurt greco 0%', 'Mela', 'Mandorle'], ['Fiocchi di latte', 'Gallette di riso', 'Noci'], ['Skyr', 'Kiwi', 'Mandorle'], ['Yogurt greco 0%', 'Banana', 'Noci']],
+  /** first usable name of a list, rotating from i */
+  pick(L, i, alt) { for (let j = 0; j < L.length; j++) { const n = L[(i + j) % L.length]; if (this.ok(n)) return n; } for (const n of alt || []) if (this.ok(n)) return n; return null; },
+  sub(n) { if (this.ok(n)) return n; const C = this.C(); const M = { 'Yogurt greco 0%': ['Yogurt di soia'], 'Skyr': ['Yogurt di soia'], 'Latte parzialmente scremato': ['Bevanda di soia'], 'Fiocchi di latte': ['Tofu', 'Yogurt di soia'], 'Fette biscottate integrali': ['Fette biscottate senza glutine', 'Gallette di riso'], 'Pane integrale': ['Pane senza glutine', 'Gallette di riso'], 'Avena in fiocchi': ['Gallette di riso'], 'Uovo': ['Tofu', 'Yogurt di soia'] }; for (const x of M[n] || []) if (this.ok(x)) return x; return null; },
+  protFor(cat, i) { const C = this.C(); let order = [cat];
+    if (C.excl.includes('vegan')) order = ['legumi', 'veg']; else if (C.excl.includes('veg')) order = cat === 'bianca' || cat === 'rossa' ? ['uova', 'formaggio', 'legumi', 'veg'] : cat === 'pesce' ? ['legumi', 'uova', 'veg'] : [cat, 'legumi', 'uova'];
+    else order = [cat, 'bianca', 'legumi', 'uova', 'pesce'];
+    for (const o of order) { const n = this.pick(this.PROT[o], i); if (n) return n; } return null; },
+  week() { const D = { name: 'Piano di Orbita', gen: true, kcal: null, notes: [], days: [], start: todayK(), from: todayK(), done: {} }, sp = this.split(), names = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
+    for (let d = 0; d < 7; d++) { let k = todayK(); while (dowIdx(k) !== d) k = addDK(k, 1); const T = this.target(k), meals = [];
+      for (const [meal, s] of sp) { const t = { kcal: T.kcal * s, p: T.p * s, c: T.c * s, f: T.f * s };
+        if (meal === 'colazione') { const [P, Cb, F, fix] = this.BRK[d % this.BRK.length]; const it = this.solve({ P: this.sub(P), C: this.sub(Cb), F: this.sub(F) || (this.ok('Mandorle') ? 'Mandorle' : null) }, fix.filter(([n]) => this.ok(n)), t); meals.push({ meal, label: 'Colazione', items: it }); continue; }
+        if (meal === 'spuntino' || meal === 'merenda') { const [P, Cb, F] = this.SNK[(d + (meal === 'spuntino' ? 2 : 0)) % this.SNK.length]; meals.push({ meal, label: meal === 'spuntino' ? 'Spuntino' : 'Merenda', items: this.solve({ P: this.sub(P), C: this.sub(Cb) || this.pick(['Mela', 'Kiwi', 'Arancia'], d), F: this.sub(F) }, [], t) }); continue; }
+        const lunch = meal === 'pranzo', cat = this.WEEK[d][lunch ? 0 : 1], P = this.protFor(cat, d + (lunch ? 0 : 3)), Cb = this.pick(lunch ? this.CARB_L : this.CARB_D, d, ['Riso (crudo)', 'Patate', 'Quinoa (cruda)']), V = this.pick(this.VEG, d * 2 + (lunch ? 0 : 1));
+        const leg = /lenticch|ceci|fagioli|piselli/i.test(P || '');
+        const fx = V ? [[V, 200]] : []; if (/^uovo$/i.test(P || '') && this.ok('Albume')) fx.push(['Albume', 100]);
+        meals.push({ meal, label: lunch ? 'Pranzo' : 'Cena', items: this.solve({ P, C: Cb, F: 'Olio extravergine d\'oliva' }, fx, leg ? { ...t, p: t.p * .85 } : t) }); }
+      const day = { label: names[d], dow: d + 1, meals: meals.filter(m => m.items.length) }; day.kcal = Diet.kcalDay(day); D.days.push(day); }
+    const T = this.target(); D.kcal = T.kcal;
+    D.notes = [`Calorie: circa ${this.target(this.restDay()).kcal} kcal nei giorni di riposo${this.C().train.length ? `, ${this.target(this.trainDay()).kcal} in quelli di allenamento` : ''}.`, `Proteine ${T.p} g · carboidrati ${T.c} g · grassi ${T.f} g al giorno (giorno di oggi).`, 'Pasta, riso e cereali sono pesati crudi; carne e pesce crudi, legumi già cotti.', 'Verdura a volontà oltre a quella indicata; acqua almeno ' + (T.water / 1000).toLocaleString('it-IT') + ' litri.', 'Piano generico fatto da Orbita, non sostituisce un nutrizionista.'];
+    return D; },
+  restDay() { for (let i = 0; i < 7; i++) { const k = addDK(todayK(), i); if (!this.C().train.includes(dowIdx(k) + 1)) return k; } return todayK(); },
+  trainDay() { for (let i = 0; i < 7; i++) { const k = addDK(todayK(), i); if (this.C().train.includes(dowIdx(k) + 1)) return k; } return todayK(); },
+  /** next meal now, sized on what is left of today */
+  nextMeal() { const h = new Date().getHours() + new Date().getMinutes() / 60, sp = this.split().map(x => x[0]); const at = { colazione: 7, spuntino: 10.5, pranzo: 13, merenda: 16.5, cena: 20 };
+    const E = Health.eaten(todayK()), T = this.target(); const eatenMeals = new Set(Health.items(todayK()).map(x => x.meal === 'spuntini' ? (h < 13 ? 'spuntino' : 'merenda') : x.meal));
+    const left = sp.filter(m => at[m] >= h - 1.5 && !eatenMeals.has(m)); if (!left.length) return null; const m = left[0];
+    const rest = { kcal: T.kcal - E.kcal, p: T.p - E.p, c: T.c - E.c, f: T.f - E.f }; const share = this.split().filter(x => left.includes(x[0])).reduce((a, x) => a + x[1], 0), mine = (this.split().find(x => x[0] === m) || ['', .3])[1] / (share || 1);
+    const t = { kcal: Math.max(150, rest.kcal * mine), p: Math.max(10, rest.p * mine), c: Math.max(10, rest.c * mine), f: Math.max(3, rest.f * mine) }, d = dowIdx(todayK());
+    let items; if (m === 'colazione') { const [P, Cb, F, fix] = this.BRK[d % 4]; items = this.solve({ P: this.sub(P), C: this.sub(Cb), F: this.sub(F) }, fix.filter(([n]) => this.ok(n)), t); }
+    else if (m === 'spuntino' || m === 'merenda') { const [P, Cb, F] = this.SNK[d % 4]; items = this.solve({ P: this.sub(P), C: this.sub(Cb), F: this.sub(F) }, [], t); }
+    else { const cat = this.WEEK[d][m === 'pranzo' ? 0 : 1]; items = this.solve({ P: this.protFor(cat, d), C: this.pick(m === 'pranzo' ? this.CARB_L : this.CARB_D, d), F: 'Olio extravergine d\'oliva' }, [[this.pick(this.VEG, d) || 'Zucchine', 200]], t); }
+    return { meal: m, items, rest, t }; },
+};
+/* the targets of Salute follow the plan when you turn it on */
+{ const oG = Health.goalKcal.bind(Health), oM = Health.macroG.bind(Health);
+  Health.goalKcal = function (k) { return Nutri.C().on && Health.configured() ? Nutri.target(k || todayK()).kcal : oG(k); };
+  Health.macroG = function (k) { if (!(Nutri.C().on && Health.configured())) return oM(k); const T = Nutri.target(k || todayK()); return { p: T.p, c: T.c, f: T.f }; }; }
+
+/* ---------- the sheet: your numbers and your week ---------- */
+const NUM = v => Math.round(v).toLocaleString('it-IT');
+ACT.nutri = () => {
+  if (!Health.configured()) { Island.toast({ icon: 'heart', c: 'var(--pink)', t: 'Prima i tuoi dati', s: 'Altezza, anno di nascita e peso in Salute › Obiettivi', ms: 3200 }); go('health'); setTimeout(() => ACT.hSettings && ACT.hSettings(), 300); return; }
+  const sh = openSheet({ title: '🍽️ Il tuo piano alimentare', wide: true, left: { label: 'Chiudi' }, body: '<div id="nuB" style="display:flex;flex-direction:column;gap:14px"></div>', onMount() { setTimeout(() => paint(), 0); } });
+  const paint = () => { const B = $('#nuB', sh.el), p = Health.P(), C = Nutri.C(), T = Nutri.target(), R = Nutri.target(Nutri.restDay()), Tr = Nutri.target(Nutri.trainDay()), real = Nutri.real(), W = Nutri.warn(), D = Diet.D();
+    const bar = (l, v, u, col) => `<div class="nu-m"><span class="nu-dot" style="background:${col}"></span><span class="grow">${l}</span><b class="tnum">${NUM(v)} ${u}</b></div>`;
+    B.innerHTML = `
+      ${W.map(w => `<div class="nu-warn">⚠️ ${esc(w)}</div>`).join('')}
+      <div class="nu-hero"><div><div class="muted" style="font-size:13px">${T.tr ? 'Oggi ti alleni' : 'Oggi riposo'} · ${{ keep: 'mantenimento', lose: 'dimagrimento', gain: 'aumento di massa' }[T.goal]}</div><div class="nu-big tnum">${NUM(T.kcal)}<small> kcal</small></div>
+        <div class="muted" style="font-size:13px">${C.train.length ? `Riposo ${NUM(R.kcal)} · allenamento ${NUM(Tr.kcal)} kcal` : 'Segna i giorni in cui ti alleni per avere le calorie giuste'}</div></div>
+        <div class="nu-ms">${bar('Proteine', T.p, 'g', 'var(--red)')}${bar('Carboidrati', T.c, 'g', 'var(--orange)')}${bar('Grassi', T.f, 'g', 'var(--yellow)')}${bar('Fibre', T.fib, 'g', 'var(--green)')}${bar('Acqua', T.water / 1000 * 1000, 'ml', 'var(--blue)')}</div></div>
+      <div class="list">
+        <div class="row"><span class="grow"><div class="t">Metabolismo a riposo</div><div class="s">Quello che bruci senza fare niente (formula Mifflin-St Jeor)</div></span><b class="tnum">${NUM(T.bmr)} kcal</b></div>
+        <div class="row"><span class="grow"><div class="t">Quanto consumi davvero</div><div class="s">${real ? 'Stimato da quello che hai mangiato e da come cambia il tuo peso nelle ultime 3 settimane' : 'Per ora dalla formula. Registra pasti e peso per 2-3 settimane e lo calcolo sui tuoi dati veri'}</div></span><b class="tnum">${NUM(Nutri.base())} kcal</b></div>
+        ${T.adj ? `<div class="row"><span class="grow"><div class="t">${T.adj < 0 ? 'Deficit' : 'Surplus'}</div><div class="s">${T.adj < 0 ? 'circa ' + (Math.abs(T.adj) * 7 / 7700).toLocaleString('it-IT', { maximumFractionDigits: 2 }) + ' kg in meno a settimana' : 'circa ' + (T.adj * 7 / 7700).toLocaleString('it-IT', { maximumFractionDigits: 2 }) + ' kg in più a settimana'}</div></span><b class="tnum">${T.adj > 0 ? '+' : ''}${NUM(T.adj)} kcal</b></div>` : ''}
+      </div>
+      <div class="section-h" style="margin:0">Ai pasti</div>
+      <div class="nu-meals">${Nutri.split().map(([m, s]) => { const t = Nutri.mealT(m); return `<div class="nu-meal"><span>${DMEAL[m][1]}</span><b>${DMEAL[m][0]}</b><span class="tnum">${NUM(t.kcal)} kcal</span><small class="muted tnum">${t.p} P · ${t.c} C · ${t.f} G</small></div>`; }).join('')}</div>
+      <div class="section-h" style="margin:0">Il tuo profilo</div>
+      <div class="list">
+        <div class="row"><span class="grow"><div class="t">Obiettivo</div></span>${seg('nuG', [['keep', 'Mantenere'], ['lose', 'Dimagrire'], ['gain', 'Massa']], p.goal || 'keep')}</div>
+        ${p.goal === 'lose' || p.goal === 'gain' ? `<div class="row"><span class="grow"><div class="t">Ritmo</div><div class="s">kg a settimana</div></span>${seg('nuR', p.goal === 'lose' ? [['0.25', '0,25'], ['0.5', '0,5'], ['0.75', '0,75']] : [['0.15', '0,15'], ['0.25', '0,25'], ['0.4', '0,4']], String(p.rate || (p.goal === 'lose' ? .5 : .25)))}</div>` : ''}
+        <div class="row"><span class="grow"><div class="t">Attività di tutti i giorni</div><div class="s">${esc((Health.AF[p.act] || Health.AF.light)[2])}, senza contare gli allenamenti</div></span>${seg('nuA', [['sed', 'Seduto'], ['light', 'Leggera'], ['mod', 'Media'], ['high', 'Alta']], p.act || 'light')}</div>
+        <div class="row" style="flex-wrap:wrap"><span class="grow"><div class="t">Giorni di allenamento</div><div class="s">${C.train.length ? 'In media ' + Nutri.workoutKcal() + ' kcal in più quei giorni' : 'Nessuno'}</div></span><div class="nu-days">${['L', 'M', 'M', 'G', 'V', 'S', 'D'].map((l, i) => `<button class="nu-day" data-nud="${i + 1}" aria-pressed="${C.train.includes(i + 1)}">${l}</button>`).join('')}</div></div>
+        <div class="row"><span class="grow"><div class="t">Pasti al giorno</div></span>${seg('nuP', [['3', '3'], ['4', '4'], ['5', '5']], String(C.meals))}</div>
+        <div class="row" style="flex-wrap:wrap;gap:8px"><span class="grow" style="min-width:160px"><div class="t">Cosa non mangi</div></span><div class="nu-chips">${Nutri.EX.map(([id, l]) => `<button class="chip" data-nue="${id}" aria-pressed="${C.excl.includes(id)}">${l}</button>`).join('')}</div></div>
+        <div class="row"><span class="grow"><input class="input" id="nuDl" placeholder="Cibi che non ti piacciono (es. finocchi, tonno)" value="${esc(C.dislike || '')}"></span></div>
+        <div class="row"><span class="grow"><div class="t">Usa questi obiettivi in Salute</div><div class="s">Calorie e macro del diario seguono il piano, giorno per giorno</div></span>${toggleBtn('nuOn', C.on)}</div>
+      </div>
+      <button class="btn primary" id="nuWeek">${ico('spark', 'sm')}${D && D.gen ? 'Rifai il piano della settimana' : 'Crea il piano della settimana'}</button>
+      ${D && !D.gen ? `<p class="muted" style="margin:-6px 0 0;font-size:13px">Hai la dieta del nutrizionista: se crei il piano di Orbita la tengo da parte e puoi rimetterla quando vuoi.</p>` : ''}
+      <button class="btn" id="nuJudge">${ico('check', 'sm')}Va bene per la mia dieta? Valuta una ricetta</button>
+      <p class="muted" style="margin:0;font-size:12.5px">Numeri calcolati con formule usate dai nutrizionisti (Mifflin-St Jeor, proteine per kg di peso, almeno 0,9 g/kg di grassi). È un piano generico: se hai una condizione di salute, sei in gravidanza o vuoi un piano clinico, fatti seguire da un professionista.</p>`;
+    wireSeg(B, 'nuG', v => { Health.set('goal', v); paint(); }); wireSeg(B, 'nuR', v => { Health.set('rate', +v); paint(); }); wireSeg(B, 'nuA', v => { Health.set('act', v); paint(); }); wireSeg(B, 'nuP', v => { Nutri.setC('meals', +v); paint(); });
+    $$('[data-nud]', B).forEach(b => b.onclick = () => { const d = +b.dataset.nud, L = new Set(Nutri.C().train); L.has(d) ? L.delete(d) : L.add(d); Nutri.setC('train', [...L].sort()); paint(); });
+    $$('[data-nue]', B).forEach(b => b.onclick = () => { const L = new Set(Nutri.C().excl); L.has(b.dataset.nue) ? L.delete(b.dataset.nue) : L.add(b.dataset.nue); if (L.has('vegan')) L.add('veg'); Nutri.setC('excl', [...L]); paint(); });
+    $('#nuDl', B).onchange = e => { Nutri.setC('dislike', e.target.value.trim()); };
+    wireToggle($('#nuOn', B), v => { Nutri.setC('on', v); App.refresh(); });
+    $('#nuWeek', B).onclick = () => ACT.nutriWeek(); $('#nuJudge', B).onclick = () => ACT.recipeJudge(); };
+};
+ACT.nutriWeek = () => { const D = Nutri.week(); let di = Math.max(0, D.days.findIndex(d => d.dow === dowIdx(todayK()) + 1));
+  const sh = openSheet({ title: 'La tua settimana', wide: true, left: { label: 'Annulla' }, right: { label: 'Usa questo piano', act: s => { const old = Diet.D(); if (old && !old.gen) S.health.dietPro = old; S.health.diet = D; if (!Nutri.C().on) Nutri.setC('on', true); save('health'); s.close(); App.refresh(); Game.add && Game.add(5, 'Piano alimentare', { silent: true });
+      Island.toast({ icon: 'heart', c: 'var(--green)', t: 'Piano attivo', s: 'In Oggi trovi cosa mangiare adesso, in Dieta la spesa della settimana', ms: 3200, action: old && !old.gen ? { label: 'Annulla', fn: () => { S.health.diet = old; delete S.health.dietPro; save('health'); App.refresh(); } } : null }); } },
+    body: '<div id="nwB" style="display:flex;flex-direction:column;gap:12px"></div>', onMount() { setTimeout(() => draw(), 0); } });
+  const draw = () => { const B = $('#nwB', sh.el), d = D.days[di], T = Nutri.target((() => { let k = todayK(); while (dowIdx(k) !== d.dow - 1) k = addDK(k, 1); return k; })());
+    B.innerHTML = `<div class="seg" style="overflow:auto">${D.days.map((x, i) => `<button type="button" data-nw="${i}" aria-pressed="${i === di}">${x.label.slice(0, 3)}</button>`).join('')}</div>
+      <div class="muted" style="font-size:14px">${d.label}${T.tr ? ' · allenamento' : ''}: <b class="tnum">${NUM(d.kcal)} kcal</b> (obiettivo ${NUM(T.kcal)}) · ${Math.round(d.meals.reduce((s, m) => s + m.items.reduce((a, it) => a + it.p * it.g / 100, 0), 0))} g di proteine</div>
+      ${d.meals.map(m => `<div class="card nu-card"><div class="card-h"><h3>${DMEAL[m.meal][1]} ${esc(m.label)}</h3><span class="muted tnum" style="font-size:13px">${NUM(m.items.reduce((a, it) => a + it.kcal * it.g / 100, 0))} kcal</span></div>${m.items.map(it => `<div class="dt-it"><span class="grow t">${esc(it.n)}</span><span class="dt-q tnum">${esc(it.q)}</span></div>`).join('')}</div>`).join('')}
+      <div class="list flat">${D.notes.map(n => `<div class="row"><span class="grow s" style="font-size:13.5px">• ${esc(n)}</span></div>`).join('')}</div>`;
+    $$('[data-nw]', B).forEach(b => b.onclick = () => { di = +b.dataset.nw; draw(); }); };
+};
+
+/* ---------- Today: the next meal, sized on what is left ---------- */
+TODAY_CARDS.nutri = 'Cosa mangio adesso'; if (!TODAY_DEFAULT.includes('nutri')) TODAY_DEFAULT.splice(Math.max(0, TODAY_DEFAULT.indexOf('diet') + 1), 0, 'nutri');
+TODAY_EXTRA.nutri = () => { if (Diet.D() || !Health.configured() || !Nutri.C().on) return ''; const N = Nutri.nextMeal(); if (!N || !N.items.length) return ''; const T = Nutri.target(), E = Health.eaten(todayK());
+  const tot = N.items.reduce((a, it) => a + it.kcal * it.g / 100, 0);
+  return `<section class="card span-6 dt-card nu-today"><div class="card-h"><h3>${DMEAL[N.meal][1]} ${DMEAL[N.meal][0]} su misura</h3><button class="more" data-act="nutri">Piano${ico('right', 'sm')}</button></div>
+    <div class="muted" style="font-size:13px;margin-bottom:6px">Ti restano <b class="tnum">${NUM(Math.max(0, T.kcal - E.kcal))} kcal</b> e <b class="tnum">${Math.max(0, T.p - E.p)} g</b> di proteine${T.tr ? ' · giorno di allenamento' : ''}</div>
+    <div class="dt-items">${N.items.map(it => `<div class="dt-it"><span class="grow t">${esc(it.n)}</span><span class="dt-q tnum">${esc(it.q)}</span></div>`).join('')}</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px"><button class="btn primary sm" data-act="nutriEat">${ico('check', 'sm')}Mangiato</button><span class="muted tnum" style="font-size:13px">≈ ${NUM(tot)} kcal</span></div></section>`; };
+ACT.nutriEat = () => { const N = Nutri.nextMeal(); if (!N) return; const meal = N.meal === 'spuntino' || N.meal === 'merenda' ? 'spuntini' : N.meal; for (const it of N.items) Health.add(meal, { name: it.n, kcal: it.kcal, p: it.p, c: it.c, f: it.f }, it.g, todayK()); save('health'); App.refresh(); Island.toast({ icon: 'check', c: 'var(--green)', t: 'Registrato', s: `${DMEAL[N.meal][0]} nel diario di Salute`, ms: 2000 }); };
+
+/* ---------- "Va bene per la mia dieta?" ---------- */
+const Judge = {
+  CARB: /pasta|sfoglia|lasagn|spaghett|penne|fusilli|rigatoni|linguine|tagliatell|riso|risotto|farro|orzo|quinoa|cous|bulgur|gnocchi|patat|pane|piadina|polenta|farina|pangrattato/i,
+  /** ingredients [{name, g, food}] from a Ricettario recipe */
+  fromRecipe(r) { return { title: r.title, servings: +r.servings || 2, ing: (r.ingredients || []).map(i => ({ name: i.name, g: +i.g || 0, food: this.food(i.name) })), rid: r.id }; },
+  food(n) { const x = NF(n) || (Health.search(String(n).split(/[,(]/)[0]) || [])[0]; return x ? { name: x.name, kcal: +x.kcal || 0, p: +x.p || 0, c: +x.c || 0, f: +x.f || 0 } : null; },
+  /** a pasted recipe: with the AI when there is one, otherwise "200 g pasta" lines */
+  async parse(text, files) { const sample = await Cap.get('sample').catch(() => null);
+    if (sample) { let images = []; for (const f of files || []) { if (/^image\//.test(f.type)) images.push(f); else if (/pdf$/i.test(f.type)) { const p = await readPdf(f, true); text += '\n' + (p.text || ''); if (!(p.text || '').trim()) images.push(...(p.images || [])); } }
+      try { const r = await sample.json(`Sei un nutrizionista italiano. ${images.length ? 'Nelle immagini c\'è' : 'Qui sotto c\'è'} una ricetta. Estrai titolo, numero di porzioni (se non è scritto stimalo) e TUTTI gli ingredienti con i grammi TOTALI della ricetta (stima i grammi se la quantità è in pezzi, cucchiai, "q.b." — olio q.b. = 10 g a porzione) e i valori nutrizionali PER 100 g dell'ingrediente come pesato (pasta e riso crudi). Rispondi solo con JSON {"title": "", "servings": 2, "ingredients": [{"name": "", "g": 0, "kcal": 0, "p": 0, "c": 0, "f": 0}]}.${text.trim() ? '\n\nRicetta:\n' + text.slice(0, 6000) : ''}`, images.length ? { images } : undefined);
+        if (r && Array.isArray(r.ingredients) && r.ingredients.length) return { title: String(r.title || 'Ricetta').slice(0, 80), servings: Math.max(1, Math.round(+r.servings || 2)), ing: r.ingredients.filter(i => i && i.name).map(i => { const db = NF(i.name); return { name: String(i.name).slice(0, 60), g: Math.max(0, Math.round(+i.g || 0)), food: db ? { name: db.name, kcal: db.kcal, p: db.p, c: db.c, f: db.f } : (+i.kcal ? { name: String(i.name), kcal: +i.kcal, p: +i.p || 0, c: +i.c || 0, f: +i.f || 0 } : this.food(i.name)) }; }) }; } catch (_) {} }
+    const ing = [], L = String(text || '').split(/\n|;|•/).map(s => s.trim()).filter(Boolean); let title = '', servings = 2;
+    for (const l of L) { const sv = l.match(/(\d+)\s*(porzioni|persone|pers\.)/i); if (sv) { servings = +sv[1]; const tt = l.replace(sv[0], '').replace(/[·:,\-–(\s)per]+$/i, '').trim(); if (!title && tt.length > 2 && !/\d/.test(tt)) title = tt; continue; }
+      const m = l.match(/^(?:[-*]\s*)?(\d+(?:[.,]\d+)?)\s*(kg|g|gr|grammi|ml|l)\b\.?\s*(?:di\s+)?(.+)$/i) || l.match(/^(?:[-*]\s*)?(.+?)\s*[:\-–]?\s*(\d+(?:[.,]\d+)?)\s*(kg|g|gr|grammi|ml|l)\b/i);
+      if (m) { let [a, b, c] = /^\d/.test(m[1]) ? [m[1], m[2], m[3]] : [m[2], m[3], m[1]]; let g = parseFloat(String(a).replace(',', '.')); if (/^(kg|l)$/i.test(b)) g *= 1000; ing.push({ name: c.replace(/[.,]$/, ''), g: Math.round(g), food: this.food(c) }); continue; }
+      const u = l.match(/^(\d+)\s+(uova|uovo)/i); if (u) { ing.push({ name: 'Uovo', g: +u[1] * 50, food: this.food('Uovo') }); continue; }
+      const oq = l.match(/^(olio|sale|pepe|basilico|prezzemolo|aglio)/i); if (oq) { ing.push({ name: l, g: /olio/i.test(l) ? 10 * servings : 0, food: this.food(oq[1]) }); continue; }
+      if (!title && l.length < 70 && !/\d/.test(l)) title = l; }
+    return ing.length ? { title: title || 'Ricetta', servings, ing } : null; },
+  tot(ing, n = 1) { const o = { kcal: 0, p: 0, c: 0, f: 0 }; for (const i of ing) if (i.food && i.g) for (const q of ['kcal', 'p', 'c', 'f']) o[q] += i.food[q] * i.g / 100 / n; for (const q in o) o[q] = Math.round(o[q]); return o; },
+  /** the target for that meal: your diet's meal if you have one, else your plan */
+  target(meal) { const D = Diet.D(); if (D) { const d = Diet.day(); const m = d && d.meals.find(x => x.meal === meal || (meal === 'spuntini' && (x.meal === 'spuntino' || x.meal === 'merenda'))); if (m) { const s = q => Math.round(m.items.reduce((a, it) => a + (+it[q] || 0) * (+it.g || 0) / 100, 0)); return { kcal: s('kcal'), p: s('p'), c: s('c'), f: s('f'), from: D.gen ? 'il tuo piano' : 'la tua dieta' }; } }
+    const t = Nutri.mealT(meal === 'spuntini' ? 'merenda' : meal); return { ...t, from: 'il tuo piano' }; },
+  /** the verdict and the changes, per portion */
+  judge(R, meal) { const n = R.servings, T = this.target(meal), por = R.ing.map(i => ({ ...i, g: Math.round(i.g / n * 10) / 10 })), out = por.map(i => ({ ...i, g0: i.g })), ch = [], snack = /colazione|spuntini/.test(meal);
+    const swap = (i, to, ratio, why, label) => { const f = this.food(to); if (!f) return false; const x = out[i], nm = label || f.name; ch.push({ i, kind: 'swap', from: x.name, to: nm, g0: x.g, g1: Math.round(x.g * ratio), why }); x.name = nm; x.food = f; x.g = Math.round(x.g * ratio); return true; };
+    const cap = (i, g, why) => { const x = out[i]; if (x.g <= g) return; ch.push({ i, kind: 'less', from: x.name, g0: x.g, g1: g, why }); x.g = g; };
+    const missing = out.filter(i => i.g && !i.food).map(i => i.name);
+    out.forEach((x, i) => { const n0 = x.name;
+      const ex = Nutri.bad(n0); if (ex) { const alt = ex === 'Senza glutine' ? (/pasta/i.test(n0) ? 'Pasta senza glutine (cruda)' : /pane/i.test(n0) ? 'Pane senza glutine' : /farina|pangrattato/i.test(n0) ? 'Farina di riso' : 'Riso (crudo)') : ex === 'Senza lattosio' ? (/latte/i.test(n0) ? 'Bevanda di soia' : /yogurt/i.test(n0) ? 'Yogurt di soia' : /panna/i.test(n0) ? 'Panna vegetale da cucina' : /burro/i.test(n0) ? 'Olio extravergine d\'oliva' : 'Tofu')
+          : /Vegetariano|Vegano|pesce|carne/i.test(ex) ? (/tonno|salmone|pesce|merluzzo/i.test(n0) && !Nutri.C().excl.includes('veg') ? 'Petto di pollo' : 'Ceci cotti/in scatola') : null;
+        if (!(alt && Nutri.ok(alt) && swap(i, alt, /burro/i.test(n0) ? .6 : /legumi|ceci/i.test(alt) && x.food && x.food.p > 15 ? 1.4 : 1, `${ex === 'non ti piace' ? 'non ti piace' : ex.toLowerCase()}`))) ch.push({ i, kind: 'no', from: n0, why: ex }); return; }
+      if (/^burro(?! di)/i.test(n0)) swap(i, 'Olio extravergine d\'oliva', .6, 'stesso gusto rotondo con meno grassi saturi');
+      else if (/^panna(?! vegetale)/i.test(n0)) swap(i, Nutri.ok('Yogurt greco 0%') ? 'Yogurt greco 0%' : 'Panna vegetale da cucina', 1, 'cremosità con un quarto delle calorie');
+      else if (/^maionese/i.test(n0)) swap(i, Nutri.ok('Yogurt greco 0%') ? 'Yogurt greco 0%' : 'Hummus', 1, 'salsa leggera');
+      else if (/guanciale|pancetta/i.test(n0)) { if (x.g > 20) cap(i, 20, 'tieni il sapore, ma 20 g bastano'); }
+      else if (/^salsiccia(?! di pollo)/i.test(n0)) swap(i, 'Salsiccia di pollo', 1, 'metà dei grassi');
+      else if (/macinat/i.test(n0) && x.food && x.food.f > 12) swap(i, 'Manzo magro (fesa)', 1, 'chiedi al banco di macinarti la fesa: un terzo dei grassi', 'Macinato magro (fesa di manzo)');
+      else if (/^mozzarella$|^mozzarella di bufala/i.test(n0) && !snack) swap(i, 'Mozzarella light', 1, 'filante con meno grassi');
+      else if (/^latte intero/i.test(n0)) swap(i, 'Latte parzialmente scremato', 1, 'meno grassi');
+      else if (/^yogurt.*intero/i.test(n0)) swap(i, 'Yogurt greco 0%', 1, 'più proteine, meno grassi');
+      else if (/^philadelphia|^formaggio spalmabile(?! light)/i.test(n0)) swap(i, 'Formaggio spalmabile light', 1, 'versione light');
+      if (/^olio/i.test(out[i].name)) cap(i, snack ? 5 : 10, 'l\'olio è il modo più facile di sforare: misuralo col cucchiaio');
+      if (/parmigiano|grana|pecorino/i.test(out[i].name)) cap(i, 10, 'una spolverata è sufficiente');
+      if (/^zucchero/i.test(out[i].name) && out[i].g > 5) cap(i, Math.round(out[i].g / 2), 'metà zucchero, il gusto quasi non cambia'); });
+    let now = this.tot(out);
+    /* too little protein: add some */
+    /* too little protein: first more of the protein already in the dish, then something that goes with it */
+    if (now.p < T.p * .8) { const pi = out.findIndex(x => x.food && x.g > 0 && x.food.p >= 15 && x.food.f <= 12 && !/parmigian|grana|pecorino|guanciale|pancetta|salame|formaggio|mozzarella|ricotta/i.test(x.name));
+      if (pi >= 0) { const x = out[pi], g1 = Math.round(Math.min(x.g * 2, x.g + (T.p - now.p) / x.food.p * 100) / 5) * 5; if (g1 > x.g) { ch.push({ i: pi, kind: 'more', from: x.name, g0: x.g, g1, why: `più proteine: te ne servono ${T.p} g a questo pasto` }); x.g = g1; now = this.tot(out); } } }
+    if (now.p < T.p * .8) { const veg = Nutri.C().excl.includes('veg'), names = out.map(x => x.name).join(' ') + ' ' + R.title, add = snack ? 'Yogurt greco 0%' : /uov/i.test(names) && Nutri.ok('Albume') ? 'Albume' : /lenticch|ceci|fagiol|pisell/i.test(names) || veg ? 'Ceci cotti/in scatola' : /tonno|pesce|salmone|merluzzo|gamber/i.test(names) ? 'Tonno al naturale' : 'Petto di pollo', f = this.food(Nutri.sub(add) || add);
+      if (f && f.p) { const g = clamp(Math.round((T.p - now.p) / f.p * 100 / 10) * 10, 40, snack ? 200 : 160); out.push({ name: f.name, g, g0: 0, food: f }); ch.push({ i: out.length - 1, kind: 'add', to: f.name, g1: g, why: `ti mancano ${T.p - now.p} g di proteine per questo pasto` }); now = this.tot(out); } }
+    /* still too much fat: the oil is the first thing to measure */
+    if (now.f > T.f * 1.2) out.forEach((x, i) => { if (/^olio/i.test(x.name) && x.g > 5) cap(i, 5, 'i grassi sono ancora alti: un cucchiaino basta'); }); now = this.tot(out);
+    /* calories: carbs up or down to fit */
+    const carbs = out.map((x, i) => [x, i]).filter(([x]) => this.CARB.test(x.name) && x.food && x.g > 0);
+    if (now.kcal > T.kcal * 1.1 && carbs.length) { const extra = now.kcal - T.kcal, ck = carbs.reduce((a, [x]) => a + x.food.kcal * x.g / 100, 0), k = clamp(1 - extra / Math.max(ck, 1), .5, 1);
+      if (k < .97) for (const [x, i] of carbs) { const g1 = Math.max(5, Math.round(x.g * k / 5) * 5); if (g1 < x.g) { ch.push({ i, kind: 'less', from: x.name, g0: x.g, g1, why: 'per stare nelle calorie del pasto' }); x.g = g1; } } now = this.tot(out); }
+    else if (now.kcal < T.kcal * .88 && carbs.length && !snack) { const [x, i] = carbs[0], g1 = Math.round((x.g + (T.kcal - now.kcal) / x.food.kcal * 100) / 5) * 5; ch.push({ i, kind: 'more', from: x.name, g0: x.g, g1, why: 'il piatto è leggero: puoi mangiarne di più' }); x.g = g1; now = this.tot(out); }
+    /* whole portion still too big */
+    let por2 = 1; if (now.kcal > T.kcal * 1.15) { por2 = clamp(T.kcal / now.kcal, .5, 1); ch.push({ kind: 'portion', why: `porzione un po' più piccola: ${Math.round(por2 * 100)}% di quella della ricetta` }); out.forEach(x => x.g = Math.round(x.g * por2)); now = this.tot(out); }
+    const before = this.tot(por), blocked = ch.some(c => c.kind === 'no'), fit0 = Math.abs(before.kcal - T.kcal) <= T.kcal * .12 && before.p >= T.p * .8 && before.f <= T.f * 1.25 && !por.some(i => Nutri.bad(i.name));
+    const fit1 = Math.abs(now.kcal - T.kcal) <= T.kcal * .15 && now.p >= T.p * .75 && now.f <= T.f * 1.35;
+    const v = fit0 ? 'ok' : blocked ? 'no' : fit1 ? 'mod' : 'no';
+    return { v, T, before, now, out, ch: fit0 ? [] : ch, missing, meal, title: R.title, servings: R.servings, rid: R.rid }; },
+  V: { ok: ['✅', 'Va bene per la tua dieta', 'var(--green)'], mod: ['⚠️', 'Va bene con queste modifiche', 'var(--orange)'], no: ['❌', 'Meglio di no, così com\'è', 'var(--red)'] },
+  html(J) { const [e, t, col] = this.V[J.v], row = (l, q, u = 'g') => { const b = J.before[q], a = J.now[q], tg = J.T[q], pct = x => clamp(x / Math.max(tg, 1) * 100, 0, 160);
+      return `<div class="jd-row"><span class="jd-l">${l}</span><div class="jd-bars"><div class="jd-bar"><i style="width:${pct(b) / 1.6}%;background:var(--gray3,#c7c7cc)"></i><span class="tnum">${NUM(b)}</span></div>${J.ch.length ? `<div class="jd-bar"><i style="width:${pct(a) / 1.6}%;background:${col}"></i><span class="tnum">${NUM(a)}</span></div>` : ''}<div class="jd-goal" style="left:${100 / 1.6}%"></div></div><span class="jd-t tnum">${NUM(tg)} ${u}</span></div>`; };
+    const desc = c => c.kind === 'swap' ? `<b>${esc(c.from)}</b> → <b>${esc(c.to)}</b>${c.g1 !== c.g0 ? ` (${NUM(c.g1)} g)` : ''}` : c.kind === 'less' ? `<b>${esc(c.from)}</b>: ${NUM(c.g0)} → <b>${NUM(c.g1)} g</b>` : c.kind === 'more' ? `<b>${esc(c.from)}</b>: ${NUM(c.g0)} → <b>${NUM(c.g1)} g</b>` : c.kind === 'add' ? `Aggiungi <b>${NUM(c.g1)} g di ${esc(c.to)}</b>` : c.kind === 'portion' ? 'Porzione più piccola' : `<b>${esc(c.from)}</b>: da togliere`;
+    return `<div class="jd-head" style="--c:${col}"><span class="jd-e">${e}</span><div><div class="jd-v">${t}</div><div class="muted" style="font-size:13.5px">${esc(J.title)} · una porzione su ${J.servings} · confrontata con ${{ colazione: 'la colazione', pranzo: 'il pranzo', cena: 'la cena', spuntini: 'lo spuntino' }[J.meal]} ${J.T.from === 'la tua dieta' ? 'della tua dieta' : 'del tuo piano'}</div></div></div>
+      <div class="jd-chart">${row('Calorie', 'kcal', 'kcal')}${row('Proteine', 'p')}${row('Carboidrati', 'c')}${row('Grassi', 'f')}<div class="muted" style="font-size:12px;margin-top:4px">${J.ch.length ? 'Grigio: com\'è · colorato: con le modifiche · linea: il tuo obiettivo' : 'Grigio: la ricetta · linea: il tuo obiettivo'}</div></div>
+      ${J.ch.length ? `<div class="section-h" style="margin:0">Cosa cambiare</div><div class="list">${J.ch.map(c => `<div class="row"><span class="grow" style="min-width:0"><div class="t">${desc(c)}</div><div class="s">${esc(c.why)}</div></span></div>`).join('')}</div>` : `<p style="margin:0">Calorie e macro sono vicini a quello che ti serve per questo pasto. Buon appetito!</p>`}
+      ${J.missing.length ? `<p class="muted" style="margin:0;font-size:12.5px">Non ho trovato i valori di: ${esc(J.missing.join(', '))}. Ne ho tenuto conto come se fossero leggeri.</p>` : ''}
+      <div class="section-h" style="margin:0">Ingredienti per una porzione</div><div class="list flat">${J.out.filter(x => x.g > 0 || x.g0 > 0).map(x => `<div class="row"><span class="grow t">${esc(x.name)}</span><span class="tnum muted">${x.g0 && x.g0 !== x.g ? `<s>${NUM(x.g0)}</s> ` : ''}${x.g ? NUM(x.g) + ' g' : '—'}</span></div>`).join('')}</div>`; },
+};
+ACT.recipeJudge = (rid) => { const h = new Date().getHours(); let meal = h < 10 ? 'colazione' : h < 15 ? 'pranzo' : h < 18 ? 'spuntini' : 'cena', R = null, J = null, files = [];
+  const r0 = typeof rid === 'string' ? S.recipes.find(x => x.id === rid) : null; if (r0) R = Judge.fromRecipe(r0);
+  const sh = openSheet({ title: 'Va bene per la mia dieta?', wide: true, left: { label: 'Chiudi' }, body: `<div id="jdIn" style="display:flex;flex-direction:column;gap:10px"></div><div id="jdOut" style="display:flex;flex-direction:column;gap:12px"></div>`, onMount() { setTimeout(() => { input(); if (R) run(); }, 0); } });
+  const input = () => { const I = $('#jdIn', sh.el);
+    I.innerHTML = `${R && R.rid ? '' : `<p class="muted" style="margin:0;font-size:14px">Incolla la ricetta (ingredienti con i grammi), fotografala o scegline una dal Ricettario.</p>
+      <textarea class="input" id="jdT" rows="6" placeholder="Pasta alla carbonara · 2 porzioni\n200 g spaghetti\n100 g guanciale\n3 uova\n50 g pecorino"></textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><label class="btn sm">${ico('camera', 'sm')}Foto o PDF<input type="file" id="jdF" accept="image/*,application/pdf" multiple hidden></label>${S.recipes.length ? `<select class="input" id="jdR" style="flex:1;min-width:160px"><option value="">Dal Ricettario…</option>${S.recipes.map(r => `<option value="${r.id}">${esc(r.title)}</option>`).join('')}</select>` : ''}</div><small class="muted" id="jdFn"></small>`}
+      <div class="row" style="padding:0;gap:8px;flex-wrap:wrap"><span class="grow t">Per quale pasto</span>${seg('jdM', [['colazione', 'Colazione'], ['pranzo', 'Pranzo'], ['spuntini', 'Spuntino'], ['cena', 'Cena']], meal)}</div>
+      ${R && R.rid ? '' : `<button class="btn primary" id="jdGo">${ico('check', 'sm')}Valuta</button>`}`;
+    wireSeg(I, 'jdM', v => { meal = v; if (R) run(); });
+    const F = $('#jdF', I); if (F) F.onchange = () => { files = [...F.files]; $('#jdFn', I).textContent = files.map(f => f.name).join(', '); };
+    const S_ = $('#jdR', I); if (S_) S_.onchange = () => { const r = S.recipes.find(x => x.id === S_.value); if (r) { R = Judge.fromRecipe(r); run(); } };
+    const G = $('#jdGo', I); if (G) G.onclick = async () => { const t = $('#jdT', I).value; if (!t.trim() && !files.length) return; G.disabled = true; G.innerHTML = '<span class="spin"></span> Leggo la ricetta…'; R = await Judge.parse(t, files); G.disabled = false; G.innerHTML = `${ico('check', 'sm')}Valuta`;
+      if (!R) { Island.toast({ icon: 'x', c: 'var(--red)', t: 'Non trovo gli ingredienti', s: 'Scrivili uno per riga con i grammi (es. 80 g pasta)', ms: 3200 }); return; } run(); }; };
+  const run = () => { J = Judge.judge(R, meal); const O = $('#jdOut', sh.el); O.innerHTML = Judge.html(J) + `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="jdSave">${ico('book', 'sm')}${J.ch.length ? 'Salva con le modifiche' : 'Salva nel Ricettario'}</button><button class="btn" id="jdEat">${ico('check', 'sm')}Mangiato: registra la porzione</button></div>`;
+    $('#jdSave', O).onclick = () => { const o = { id: uid(), added: Date.now(), cooked: 0, title: R.title + (J.ch.length ? ' (versione dieta)' : ''), emoji: '🥗', servings: R.servings, time: null, tags: J.v !== 'no' ? ['Leggero'].filter(t => typeof RTAGS === 'undefined' || RTAGS.includes(t)) : [], ingredients: J.out.filter(x => x.g > 0).map(x => ({ name: x.name, qty: `${Math.round(x.g * R.servings)} g`, g: Math.round(x.g * R.servings) })), steps: (r0 && r0.steps) || [], notes: J.ch.length ? 'Modifiche per la dieta: ' + J.ch.map(c => c.kind === 'swap' ? `${c.from} → ${c.to}` : c.kind === 'add' ? `+${c.g1} g ${c.to}` : c.kind === 'portion' ? 'porzione più piccola' : `${c.from} ${c.g1 || ''} g`).join('; ') : '' };
+      S.recipes.push(o); save('recipes'); try { RCP.syncFood(o); } catch (_) {} sh.close(); Island.toast({ icon: 'book', c: 'var(--green)', t: 'Salvata nel Ricettario', s: o.title, ms: 2400, action: { label: 'Apri', fn: () => openRecipe(o.id) } }); };
+    $('#jdEat', O).onclick = () => { const g = J.out.reduce((a, x) => a + (x.g || 0), 0) || 1, n = J.now; Health.add(meal, { name: R.title, kcal: n.kcal / g * 100, p: n.p / g * 100, c: n.c / g * 100, f: n.f / g * 100 }, g, todayK()); save('health'); sh.close(); App.refresh(); Island.toast({ icon: 'check', c: 'var(--green)', t: 'Registrato', s: `${R.title} · ${NUM(n.kcal)} kcal`, ms: 2200 }); }; };
+};
+/* entry points */
+{ const oA = VIEWS.recipes.actions; VIEWS.recipes.actions = () => `<button class="btn sm" data-act="recipeJudge">${ico('check', 'sm')}<span class="hide-narrow">Va bene per me?</span></button>` + oA(); }
+{ const oA = VIEWS.health.actions; VIEWS.health.actions = () => `<button class="btn sm" data-act="nutri" title="Il tuo piano alimentare">🍽️<span class="hide-narrow">Piano</span></button>` + oA(); }
+{ const oO = openRecipe; openRecipe = function (id) { const r = oO.apply(this, arguments); setTimeout(() => { const s = Sheets[Sheets.length - 1]; const B = s && $('#rcB', s.el); if (!B || $('[data-jd]', B)) return; B.insertAdjacentHTML('beforeend', `<button class="btn" data-jd>${ico('check', 'sm')}Va bene per la mia dieta?</button>`); $('[data-jd]', B).onclick = () => { s.close(); ACT.recipeJudge(id); }; }, 60); return r; }; }
+CMD_ACT.push(['Il tuo piano alimentare', 'heart', () => ACT.nutri()], ['Crea il piano alimentare della settimana', 'spark', () => ACT.nutriWeek()], ['Va bene per la mia dieta? Valuta una ricetta', 'check', () => ACT.recipeJudge()]);
+Promise.resolve().then(() => { if (typeof Assistant === 'undefined') return; const oT = Assistant.tools.bind(Assistant); Assistant.tools = function () { const L = oT(), self = this;
+  L.push({ name: 'nutrition_targets', description: 'Obiettivi alimentari personali dell\'utente per oggi (calorie, proteine, carboidrati, grassi, acqua) e per ogni pasto, calcolati sul suo profilo, sul suo obiettivo e sugli allenamenti; più quanto ha già mangiato oggi.', inputSchema: { type: 'object', properties: {} },
+    execute() { if (!Health.configured()) return { error: 'profilo Salute incompleto' }; const T = Nutri.target(), E = Health.eaten(todayK()); self.note('search', 'Letto il tuo piano alimentare'); return { today: T, eaten: E, meals: Object.fromEntries(Nutri.split().map(([m]) => [m, Nutri.mealT(m)])), exclusions: Nutri.C().excl, dislike: Nutri.C().dislike }; } });
+  return L; }; });
+/* look */
+{ const st = document.createElement('style'); st.textContent = `.nu-warn{background:rgba(255,149,0,.12);border-radius:12px;padding:10px 12px;font-size:14px}.nu-hero{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:center;background:var(--card2,rgba(120,120,128,.08));border-radius:18px;padding:16px}@media (max-width:560px){.nu-hero{grid-template-columns:1fr}}.nu-big{font:700 44px/1.05 -apple-system,system-ui,sans-serif;letter-spacing:-.02em}.nu-big small{font-size:18px;font-weight:600;color:var(--label2,#8e8e93)}.nu-ms{display:flex;flex-direction:column;gap:6px}.nu-m{display:flex;align-items:center;gap:8px;font-size:14.5px}.nu-dot{width:9px;height:9px;border-radius:50%}.nu-meals{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}.nu-meal{display:flex;flex-direction:column;gap:2px;background:var(--card2,rgba(120,120,128,.08));border-radius:14px;padding:10px 12px;font-size:14px}.nu-days{display:flex;gap:5px}.nu-day{width:32px;height:32px;border-radius:50%;border:1px solid var(--sep,rgba(60,60,67,.2));background:transparent;font:600 13px -apple-system,system-ui;color:inherit;cursor:pointer}.nu-day[aria-pressed=true]{background:var(--accent,#007AFF);border-color:transparent;color:#fff}.nu-chips{display:flex;flex-wrap:wrap;gap:6px}.nu-chips .chip[aria-pressed=true]{background:var(--accent,#007AFF);color:#fff}.nu-card{padding:12px 14px}.jd-head{display:flex;gap:12px;align-items:center;border-radius:16px;padding:14px;background:color-mix(in srgb,var(--c) 12%,transparent)}.jd-e{font-size:32px}.jd-v{font:700 19px/1.2 -apple-system,system-ui;color:var(--c)}.jd-chart{display:flex;flex-direction:column;gap:8px}.jd-row{display:grid;grid-template-columns:90px 1fr 70px;gap:8px;align-items:center;font-size:13.5px}.jd-bars{position:relative;display:flex;flex-direction:column;gap:3px}.jd-bar{position:relative;height:14px;border-radius:7px;background:rgba(120,120,128,.1);overflow:hidden}.jd-bar i{position:absolute;inset:0 auto 0 0;border-radius:7px}.jd-bar span{position:absolute;left:6px;top:0;font:600 10.5px/14px -apple-system,system-ui;color:var(--label,#000)}.jd-goal{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--label,#000);opacity:.55;border-radius:1px}.jd-t{text-align:right;color:var(--label2,#8e8e93)}`; document.head.appendChild(st); }
 
 /* =========================================================
    ASSISTANT — "Segretario": Claude with page tools
